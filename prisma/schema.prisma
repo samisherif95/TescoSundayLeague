@@ -1,0 +1,256 @@
+// Sunday League — domain + auth schema
+// See plan: /Users/eyakristou/.claude/plans/let-me-explain-the-cuddly-haven.md
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =====================
+// Auth.js (NextAuth v5)
+// =====================
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// =====================
+// Domain
+// =====================
+
+enum Position {
+  DEF
+  MID
+  FWD
+}
+
+enum GameStatus {
+  OPEN
+  LOCKED
+  BOOKED
+  COMPLETED
+  CANCELLED
+}
+
+enum SignupStatus {
+  CONFIRMED
+  WAITLIST
+  DROPPED_OUT
+}
+
+enum TeamLabel {
+  A
+  B
+  C
+}
+
+enum PaymentStatus {
+  UNPAID
+  MARKED_PAID
+}
+
+enum PaymentMethod {
+  MONZO
+  REVOLUT
+}
+
+model User {
+  id                String    @id @default(cuid())
+  name              String?
+  email             String?   @unique
+  emailVerified     DateTime?
+  passwordHash      String?
+  image             String?
+  preferredPosition Position?
+  paymentMethod     PaymentMethod @default(MONZO)
+  paymentHandle     String?
+  skillScore        Float     @default(3.0)
+  isAdmin           Boolean   @default(false)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  accounts          Account[]
+  sessions          Session[]
+  signups           Signup[]
+  teamMemberships   TeamPlayer[]
+  ratingsGiven      Rating[]           @relation("RatingsGiven")
+  ratingsReceived   Rating[]           @relation("RatingsReceived")
+  bookedGames       Game[]             @relation("Booker")
+  bibsGames         Game[]             @relation("Bibs")
+  footballGames     Game[]             @relation("Football")
+  paymentsOwed      PaymentRequest[]   @relation("Debtor")
+  paymentsDue       PaymentRequest[]   @relation("Booker")
+  pushSubscriptions PushSubscription[]
+}
+
+model Game {
+  id              String     @id @default(cuid())
+  kickoffAt       DateTime
+  pitchName       String     @default("Ladbroke Grove")
+  pitchBookingUrl String     @default("https://hireapitch.com/ladbroke-grove")
+  status          GameStatus @default(OPEN)
+  bookerId        String?
+  bibsUserId      String?
+  footballUserId  String?
+  totalCostPence  Int?
+  createdAt       DateTime   @default(now())
+  updatedAt       DateTime   @updatedAt
+
+  booker          User?            @relation("Booker", fields: [bookerId], references: [id])
+  bibsBringer     User?            @relation("Bibs", fields: [bibsUserId], references: [id])
+  footballBringer User?            @relation("Football", fields: [footballUserId], references: [id])
+  signups         Signup[]
+  teams           Team[]
+  ratings         Rating[]
+  paymentRequests PaymentRequest[]
+
+  @@index([kickoffAt])
+  @@index([status])
+  // Matches the hot access patterns: filter by status, range/order by kickoffAt
+  // (getCurrentGame, friday-lock, sunday-complete crons).
+  @@index([status, kickoffAt])
+  // booker-picking queries filter `bookerId: { in: [...] }`.
+  @@index([bookerId])
+}
+
+model Signup {
+  id               String       @id @default(cuid())
+  gameId           String
+  userId           String
+  position         Position
+  status           SignupStatus @default(CONFIRMED)
+  waitlistPosition Int?
+  signedUpAt       DateTime     @default(now())
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, userId])
+  @@index([gameId, status])
+}
+
+model Team {
+  id     String    @id @default(cuid())
+  gameId String
+  label  TeamLabel
+
+  game    Game         @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  players TeamPlayer[]
+
+  @@unique([gameId, label])
+}
+
+model TeamPlayer {
+  teamId String
+  userId String
+
+  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([teamId, userId])
+  @@index([userId])
+}
+
+// IMPORTANT: raterId is NEVER returned in any API response.
+// Used server-side only to enforce one-rating-per-pair-per-game.
+model Rating {
+  id        String   @id @default(cuid())
+  gameId    String
+  raterId   String
+  rateeId   String
+  score     Int
+  createdAt DateTime @default(now())
+
+  game  Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  rater User @relation("RatingsGiven", fields: [raterId], references: [id], onDelete: Cascade)
+  ratee User @relation("RatingsReceived", fields: [rateeId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, raterId, rateeId])
+  @@index([rateeId])
+}
+
+model PaymentRequest {
+  id          String        @id @default(cuid())
+  gameId      String
+  debtorId    String
+  bookerId    String
+  amountPence Int
+  paymentLink String
+  paidStatus  PaymentStatus @default(UNPAID)
+  createdAt   DateTime      @default(now())
+
+  game   Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  debtor User @relation("Debtor", fields: [debtorId], references: [id], onDelete: Cascade)
+  booker User @relation("Booker", fields: [bookerId], references: [id], onDelete: Cascade)
+
+  @@unique([gameId, debtorId])
+  @@index([debtorId])
+}
+
+// One-time email sign-in codes. One active code per email (upserted).
+// `attempts` counts failed verifications so we can lock a code after a few
+// wrong guesses (brute-force protection — a 6-digit code has only 10^6 space).
+// `createdAt` doubles as the last-issued timestamp (reset on resend) so we can
+// throttle how often a fresh code can be requested for the same email.
+model LoginCode {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  codeHash  String
+  expiresAt DateTime
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+// Web Push subscription. One row per device, so a user may have several.
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  userAgent String?
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
