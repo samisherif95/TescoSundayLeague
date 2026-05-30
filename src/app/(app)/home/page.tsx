@@ -53,8 +53,11 @@ const STATUS_META: Record<
 };
 
 export default async function HomePage() {
-  const user = await requireOnboardedUser();
-  const game = await getCurrentGame();
+  // Independent queries — run them together rather than waterfalling.
+  const [user, game] = await Promise.all([
+    requireOnboardedUser(),
+    getCurrentGame(),
+  ]);
 
   if (!game) {
     return (

@@ -21,8 +21,10 @@ export default async function GameDetailPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = await params;
-  const user = await requireOnboardedUser();
-  const game = await getGameWithDetail(id);
+  const [user, game] = await Promise.all([
+    requireOnboardedUser(),
+    getGameWithDetail(id),
+  ]);
   if (!game) notFound();
 
   const confirmed = game.signups.filter(

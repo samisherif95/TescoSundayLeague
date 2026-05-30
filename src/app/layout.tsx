@@ -25,6 +25,22 @@ export const metadata: Metadata = {
   title: "Sunday League — football, organised",
   description:
     "Weekly 5-a-side coordination for your friend group. Signups, booker selection, Monzo payment requests, anonymous ratings, and balanced teams — all on autopilot.",
+  applicationName: "Sunday League",
+  manifest: "/manifest.webmanifest",
+  icons: {
+    icon: [
+      { url: "/icon-192x192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512x512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [{ url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" }],
+  },
+  // Makes iOS treat the saved icon as a real app icon (no auto-screenshot)
+  // and run it full-screen when launched from the home screen.
+  appleWebApp: {
+    capable: true,
+    title: "Sunday League",
+    statusBarStyle: "black-translucent",
+  },
 };
 
 export const viewport: Viewport = {
