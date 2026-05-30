@@ -1,18 +1,5 @@
-"use client";
-
-import { useState, useTransition } from "react";
-import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  registerWithPassword,
-  requestEmailCode,
-  signInWithEmailCode,
-  signInWithGoogle,
-  signInWithPassword,
-} from "./actions";
+import { signInWithGoogle } from "./actions";
 
 function GoogleIcon() {
   return (
@@ -38,232 +25,26 @@ function GoogleIcon() {
 }
 
 export function SignInForms({ googleEnabled }: { googleEnabled: boolean }) {
-  return (
-    <div className="space-y-5">
-      {googleEnabled ? (
-        <form action={signInWithGoogle}>
-          <Button type="submit" variant="outline" className="w-full gap-2">
-            <GoogleIcon />
-            Continue with Google
-          </Button>
-        </form>
-      ) : (
-        <div>
-          <Button variant="outline" className="w-full gap-2" disabled>
-            <GoogleIcon />
-            Continue with Google
-          </Button>
-          <p className="mt-1.5 text-xs text-muted-foreground">
-            Google sign-in needs AUTH_GOOGLE_ID and AUTH_GOOGLE_SECRET set.
-          </p>
-        </div>
-      )}
-
-      <div className="flex items-center gap-3">
-        <div className="h-px flex-1 bg-border" />
-        <span className="text-xs text-muted-foreground">
-          or continue with email
-        </span>
-        <div className="h-px flex-1 bg-border" />
-      </div>
-
-      <EmailAuth />
-    </div>
-  );
-}
-
-function EmailAuth() {
-  const [mode, setMode] = useState<"code" | "password">("code");
-
-  return (
-    <div className="space-y-4">
-      {mode === "code" ? <EmailCodeForm /> : <PasswordForm />}
-      <button
-        type="button"
-        className="block w-full text-center text-sm text-muted-foreground hover:text-foreground"
-        onClick={() => setMode(mode === "code" ? "password" : "code")}
-      >
-        {mode === "code"
-          ? "Prefer a password? Use password instead"
-          : "Email me a code instead"}
-      </button>
-    </div>
-  );
-}
-
-function EmailCodeForm() {
-  const [step, setStep] = useState<"email" | "code">("email");
-  const [email, setEmail] = useState("");
-  const [pending, start] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-
-  if (step === "email") {
+  if (!googleEnabled) {
     return (
-      <form
-        className="space-y-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const fd = new FormData(e.currentTarget);
-          setError(null);
-          start(async () => {
-            const result = await requestEmailCode(fd);
-            if ("error" in result && result.error) {
-              setError(result.error);
-              toast.error(result.error);
-            } else if ("email" in result && result.email) {
-              setEmail(result.email);
-              setStep("code");
-              toast.success("Code sent — check your inbox.");
-            }
-          });
-        }}
-      >
-        <div className="space-y-2">
-          <Label htmlFor="email">Email address</Label>
-          <Input
-            id="email"
-            name="email"
-            type="email"
-            required
-            autoComplete="email"
-            placeholder="e.g. name@example.com"
-          />
-        </div>
-        {error && (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        )}
-        <Button type="submit" className="w-full" disabled={pending}>
-          {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-          Continue
+      <div>
+        <Button variant="outline" className="w-full gap-2" disabled>
+          <GoogleIcon />
+          Continue with Google
         </Button>
-      </form>
+        <p className="mt-2 text-xs text-muted-foreground">
+          Google sign-in needs AUTH_GOOGLE_ID and AUTH_GOOGLE_SECRET set.
+        </p>
+      </div>
     );
   }
 
   return (
-    <form
-      className="space-y-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const fd = new FormData(e.currentTarget);
-        fd.set("email", email);
-        setError(null);
-        start(async () => {
-          const result = await signInWithEmailCode(fd);
-          if (result?.error) {
-            setError(result.error);
-            toast.error(result.error);
-          }
-        });
-      }}
-    >
-      <p className="text-sm text-muted-foreground">
-        We emailed a 6-digit code to <span className="font-medium">{email}</span>
-      </p>
-      <div className="space-y-2">
-        <Label htmlFor="code">Sign-in code</Label>
-        <Input
-          id="code"
-          name="code"
-          inputMode="numeric"
-          pattern="\d{6}"
-          maxLength={6}
-          required
-          autoComplete="one-time-code"
-          placeholder="123456"
-        />
-      </div>
-      {error && (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      )}
-      <Button type="submit" className="w-full" disabled={pending}>
-        {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        Verify &amp; sign in
+    <form action={signInWithGoogle}>
+      <Button type="submit" variant="outline" size="lg" className="w-full gap-2">
+        <GoogleIcon />
+        Continue with Google
       </Button>
-      <button
-        type="button"
-        className="block w-full text-center text-sm text-muted-foreground hover:text-foreground"
-        onClick={() => {
-          setStep("email");
-          setError(null);
-        }}
-      >
-        Use a different email
-      </button>
-    </form>
-  );
-}
-
-function PasswordForm() {
-  const [submode, setSubmode] = useState<"signin" | "register">("signin");
-  const [pending, start] = useTransition();
-  const [error, setError] = useState<string | null>(null);
-
-  return (
-    <form
-      className="space-y-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        const fd = new FormData(e.currentTarget);
-        setError(null);
-        start(async () => {
-          const action =
-            submode === "signin" ? signInWithPassword : registerWithPassword;
-          const result = await action(fd);
-          if (result?.error) {
-            setError(result.error);
-            toast.error(result.error);
-          }
-        });
-      }}
-    >
-      <div className="space-y-2">
-        <Label htmlFor="email">Email address</Label>
-        <Input
-          id="email"
-          name="email"
-          type="email"
-          required
-          autoComplete="email"
-          placeholder="e.g. name@example.com"
-        />
-      </div>
-      <div className="space-y-2">
-        <Label htmlFor="password">Password</Label>
-        <Input
-          id="password"
-          name="password"
-          type="password"
-          required
-          minLength={8}
-          autoComplete={
-            submode === "signin" ? "current-password" : "new-password"
-          }
-          placeholder="At least 8 characters"
-        />
-      </div>
-      {error && (
-        <p role="alert" className="text-sm text-destructive">
-          {error}
-        </p>
-      )}
-      <Button type="submit" className="w-full" disabled={pending}>
-        {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-        {submode === "signin" ? "Sign in" : "Create account"}
-      </Button>
-      <button
-        type="button"
-        className="block w-full text-center text-sm text-muted-foreground hover:text-foreground"
-        onClick={() => setSubmode(submode === "signin" ? "register" : "signin")}
-      >
-        {submode === "signin"
-          ? "New here? Create an account"
-          : "Already have one? Sign in"}
-      </button>
     </form>
   );
 }
