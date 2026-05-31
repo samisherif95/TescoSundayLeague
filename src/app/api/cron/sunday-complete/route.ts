@@ -16,9 +16,12 @@ export async function GET(req: Request) {
   }
 
   const now = new Date();
+  // Complete BOOKED games and also any that are still LOCKED past kickoff (the
+  // booker never entered the cost). Otherwise a LOCKED game lingers forever:
+  // no rating emails, and getCurrentGame keeps showing it as "this week".
   const justFinished = await prisma.game.findMany({
     where: {
-      status: GameStatus.BOOKED,
+      status: { in: [GameStatus.BOOKED, GameStatus.LOCKED] },
       kickoffAt: { lte: now },
     },
     include: {

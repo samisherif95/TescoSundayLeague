@@ -52,27 +52,38 @@ export async function confirmBooking(formData: FormData) {
   const { perPersonPence } = calcSplit(totalPence, game.signups.length);
   const desc = monzoDescription(game.kickoffAt);
 
+  // Everyone except the booker owes a share.
+  const debtors = game.signups.filter((s) => s.userId !== user.id);
+  const debtorIds = debtors.map((s) => s.userId);
+  const paymentLink = generatePaymentLink(
+    user.paymentMethod,
+    user.paymentHandle!,
+    perPersonPence,
+    desc,
+  );
+
   await prisma.$transaction(async (tx) => {
-    await tx.paymentRequest.deleteMany({ where: { gameId: game.id } });
     await tx.game.update({
       where: { id: game.id },
       data: { status: GameStatus.BOOKED, totalCostPence: totalPence },
     });
-    for (const s of game.signups) {
-      if (s.userId === user.id) continue; // booker pays themselves implicitly
-      await tx.paymentRequest.create({
-        data: {
+    // Drop requests for anyone no longer confirmed (e.g. dropped out before
+    // re-entry). Upsert the rest so re-entering the total to fix it preserves
+    // who's already marked themselves paid — we only refresh amount + link.
+    await tx.paymentRequest.deleteMany({
+      where: { gameId: game.id, debtorId: { notIn: debtorIds } },
+    });
+    for (const s of debtors) {
+      await tx.paymentRequest.upsert({
+        where: { gameId_debtorId: { gameId: game.id, debtorId: s.userId } },
+        create: {
           gameId: game.id,
           debtorId: s.userId,
           bookerId: user.id,
           amountPence: perPersonPence,
-          paymentLink: generatePaymentLink(
-            user.paymentMethod,
-            user.paymentHandle!,
-            perPersonPence,
-            desc,
-          ),
+          paymentLink,
         },
+        update: { bookerId: user.id, amountPence: perPersonPence, paymentLink },
       });
     }
   });

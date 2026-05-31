@@ -100,3 +100,53 @@ export const getGameWithDetail = cache((id: string) => {
     include: gameInclude,
   });
 });
+
+// Lighter include for the history list: just enough to summarise each game
+// (per-match scores + scorers). No signups/payments — those are detail-only.
+const historyInclude = {
+  matches: {
+    orderBy: { order: "asc" },
+    include: {
+      homeTeam: { select: { id: true, label: true } },
+      awayTeam: { select: { id: true, label: true } },
+      goals: {
+        select: {
+          teamId: true,
+          phase: true,
+          isOwnGoal: true,
+          scorerId: true,
+          scorer: { select: { id: true, name: true } },
+        },
+      },
+    },
+  },
+} satisfies Prisma.GameInclude;
+
+export type GameHistoryItem = Awaited<
+  ReturnType<typeof getGameHistory>
+>[number];
+
+/**
+ * Completed games for the history list, newest first. Admins see every
+ * completed game; everyone else sees only the ones they were signed up for
+ * (dropouts excluded).
+ */
+export const getGameHistory = cache((userId: string, isAdmin: boolean) => {
+  return prisma.game.findMany({
+    where: {
+      status: GameStatus.COMPLETED,
+      ...(isAdmin
+        ? {}
+        : {
+            signups: {
+              some: {
+                userId,
+                status: { not: SignupStatus.DROPPED_OUT },
+              },
+            },
+          }),
+    },
+    orderBy: { kickoffAt: "desc" },
+    include: historyInclude,
+  });
+});

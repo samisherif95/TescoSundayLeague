@@ -13,9 +13,36 @@ import {
   type BookerCandidate,
 } from "@/lib/game";
 import { isExemptFromDuties, pickExtra } from "@/lib/duties";
-import type { Prisma } from "@/generated/prisma/client";
+import { Prisma } from "@/generated/prisma/client";
 
 type Tx = Prisma.TransactionClient;
+
+/**
+ * Run a transaction at SERIALIZABLE isolation, retrying on Postgres
+ * serialization failures (P2034). Both signup paths are read-count-then-write
+ * (count CONFIRMED, then insert), so under the default READ COMMITTED two people
+ * grabbing the last spot at the same time could *both* be confirmed — exceeding
+ * MAX_PLAYERS — and concurrent waitlist joins could collide on the same
+ * position. SERIALIZABLE makes the DB detect the conflict and we retry the loser.
+ */
+async function serializableTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await prisma.$transaction(fn, {
+        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+      });
+    } catch (e) {
+      if (
+        e instanceof Prisma.PrismaClientKnownRequestError &&
+        e.code === "P2034" &&
+        attempt < 5
+      ) {
+        continue;
+      }
+      throw e;
+    }
+  }
+}
 
 /** Wipe and re-create a game's teams from its current CONFIRMED signups. */
 async function regenerateTeams(tx: Tx, gameId: string) {
@@ -83,7 +110,7 @@ export async function joinGame(
   userId: string,
   position: Position,
 ): Promise<SignupResult> {
-  return prisma.$transaction(async (tx) => {
+  return serializableTx(async (tx) => {
     const game = await tx.game.findUnique({ where: { id: gameId } });
     if (!game) throw new Error("Game not found");
     // Closed once the game leaves OPEN *or* the Friday-6pm deadline passes —
@@ -197,7 +224,7 @@ export async function leaveGame(
   gameId: string,
   userId: string,
 ): Promise<LeaveOutcome> {
-  return prisma.$transaction(async (tx) => {
+  return serializableTx(async (tx) => {
     const game = await tx.game.findUnique({ where: { id: gameId } });
     const signup = await tx.signup.findUnique({
       where: { gameId_userId: { gameId, userId } },

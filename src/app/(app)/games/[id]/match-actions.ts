@@ -214,7 +214,14 @@ export async function removeGoalAction(
 
   await prisma.$transaction(async (tx) => {
     await tx.goal.delete({ where: { id: goalId } });
-    if (match.status === MatchStatus.COMPLETED && match.winnerTeamId) {
+    // Reopen only if the result hinged on field goals. A penalty-decided match
+    // keeps its winner — removing an earlier goal must not wipe the shootout
+    // result or strand the penalty counts in a now-"PAUSED" match.
+    if (
+      match.status === MatchStatus.COMPLETED &&
+      match.winnerTeamId &&
+      match.phase !== MatchPhase.PENALTIES
+    ) {
       // The result hinged on goals — reopen so they can keep playing.
       await tx.match.update({
         where: { id: match.id },
@@ -305,6 +312,9 @@ export async function startPenaltiesAction(
   if (match.status === MatchStatus.COMPLETED) {
     return { error: "This match is already finished" };
   }
+  if (match.phase !== MatchPhase.GOLDEN_GOAL) {
+    return { error: "Penalties only follow a golden-goal period" };
+  }
   await prisma.match.update({
     where: { id: matchId },
     data: {
@@ -337,6 +347,12 @@ export async function recordPenaltiesAction(
   const loaded = await loadEditableMatch(matchId);
   if (!loaded.ok) return { error: loaded.error };
   const { match } = loaded;
+  if (match.status === MatchStatus.COMPLETED) {
+    return { error: "This match is already finished" };
+  }
+  if (match.phase !== MatchPhase.PENALTIES) {
+    return { error: "Start penalties before recording the result" };
+  }
 
   await prisma.match.update({
     where: { id: matchId },

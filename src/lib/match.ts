@@ -84,3 +84,28 @@ export function deriveScore(
 export function reachedGoalTarget(home: number, away: number): boolean {
   return home >= GOAL_TARGET || away >= GOAL_TARGET;
 }
+
+/**
+ * Goals tallied per named scorer (own goals and anonymous goals excluded),
+ * most goals first. Used for the history summary.
+ */
+export function tallyScorers(
+  goals: {
+    scorerId: string | null;
+    isOwnGoal: boolean;
+    scorer: { name: string | null } | null;
+  }[],
+): { id: string; name: string; goals: number }[] {
+  const byScorer = new Map<string, { id: string; name: string; goals: number }>();
+  for (const g of goals) {
+    if (g.isOwnGoal || !g.scorerId) continue;
+    const entry = byScorer.get(g.scorerId) ?? {
+      id: g.scorerId,
+      name: g.scorer?.name ?? "Unknown",
+      goals: 0,
+    };
+    entry.goals += 1;
+    byScorer.set(g.scorerId, entry);
+  }
+  return [...byScorer.values()].sort((a, b) => b.goals - a.goals);
+}

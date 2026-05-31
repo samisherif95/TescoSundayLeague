@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, User, Settings } from "lucide-react";
+import { Home, User, Settings, History } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Item = {
@@ -21,6 +21,7 @@ export function BottomNav({ isAdmin }: { isAdmin: boolean }) {
 
   const items: Item[] = [
     { href: "/home", label: "This week", Icon: Home },
+    { href: "/games", label: "History", Icon: History },
     { href: "/profile", label: "Profile", Icon: User },
     ...(isAdmin
       ? [{ href: "/admin", label: "Admin", Icon: Settings }]

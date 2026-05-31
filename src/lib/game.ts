@@ -173,17 +173,29 @@ export function monzoDescription(kickoff: Date): string {
 }
 
 /**
- * Next Sunday at 12:00 local time, returned as a UTC Date.
+ * Next Sunday at 12:00 **Europe/London** wall-clock time, returned as a UTC Date.
  * Used to seed kickoffAt when the Monday cron creates the week's game.
- * Pass a base date for testability.
+ *
+ * Computed via London parts + {@link londonWallTimeToUtc} (not `setHours`) so the
+ * kickoff is the correct instant regardless of the server's timezone — Vercel
+ * runs in UTC, where `setHours(12)` would yield 13:00 London during BST — and
+ * across the BST/GMT switch. Pass a base date for testability.
  */
 export function nextSundayNoon(now = new Date()): Date {
-  const date = new Date(now);
-  const day = date.getDay(); // 0 = Sun
-  const daysUntilSun = day === 0 ? 7 : 7 - day;
-  date.setDate(date.getDate() + daysUntilSun);
-  date.setHours(12, 0, 0, 0);
-  return date;
+  const p = londonParts(now);
+  // Day-of-week of the current London calendar date (0 = Sunday).
+  const dow = new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay();
+  const daysUntilSun = dow === 0 ? 7 : 7 - dow;
+  const target = new Date(
+    Date.UTC(p.year, p.month - 1, p.day) + daysUntilSun * 24 * 60 * 60 * 1000,
+  );
+  return londonWallTimeToUtc(
+    target.getUTCFullYear(),
+    target.getUTCMonth() + 1,
+    target.getUTCDate(),
+    12,
+    0,
+  );
 }
 
 export const LONDON_TZ = "Europe/London";
