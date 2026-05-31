@@ -16,6 +16,7 @@ import { deriveScore } from "@/lib/match";
 import { SignupControls } from "./_signup-controls";
 import { PaymentsPanel } from "./_payments-panel";
 import { MatchDay } from "./_match-day";
+import { TeamsEditor } from "./_teams-editor";
 
 export default async function GameDetailPage({
   params,
@@ -59,6 +60,16 @@ export default async function GameDetailPage({
     players: t.players.map((tp) => ({
       userId: tp.userId,
       name: tp.user.name,
+    })),
+  }));
+
+  const teamsData = game.teams.map((t) => ({
+    id: t.id,
+    label: t.label,
+    players: t.players.map((tp) => ({
+      userId: tp.userId,
+      name: tp.user.name,
+      image: tp.user.image,
     })),
   }));
 
@@ -258,31 +269,11 @@ export default async function GameDetailPage({
       )}
 
       {game.teams.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold">Teams</h2>
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {game.teams.map((team) => (
-              <Card key={team.id}>
-                <CardContent className="space-y-2 p-4">
-                  <div className="font-semibold">Team {team.label}</div>
-                  {team.players.map((tp) => (
-                    <PlayerPill
-                      key={tp.userId}
-                      name={tp.user.name}
-                      image={tp.user.image}
-                    />
-                  ))}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-          {game.teams.length === 3 && (
-            <p className="text-xs text-muted-foreground">
-              Team C rotates in against the losing team and can borrow players
-              if short.
-            </p>
-          )}
-        </section>
+        <TeamsEditor
+          gameId={game.id}
+          teams={teamsData}
+          editable={canRecord}
+        />
       )}
 
       {showMatchDay && (

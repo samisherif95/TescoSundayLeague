@@ -3,36 +3,15 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { requireOnboardedUser } from "@/lib/session";
-import { MatchPhase, MatchStatus, SignupStatus } from "@/generated/prisma/enums";
+import { MatchPhase, MatchStatus } from "@/generated/prisma/enums";
 import { deriveScore, elapsedMs, reachedGoalTarget } from "@/lib/match";
+import { authorizeBookingMember } from "@/lib/booking-access";
 
 type ActionError = { error: string };
 type ActionOk = { ok: true };
 
-/**
- * Recording is open to anyone playing that Sunday: a confirmed signup, the
- * booker, or an admin. (Server Functions are reachable by direct POST, so we
- * re-check this on every call.)
- */
-async function authorizeRecorder(
-  gameId: string,
-): Promise<{ userId: string } | ActionError> {
-  const user = await requireOnboardedUser();
-  if (user.isAdmin) return { userId: user.id };
-  const game = await prisma.game.findUnique({
-    where: { id: gameId },
-    select: { bookerId: true },
-  });
-  if (!game) return { error: "Game not found" };
-  if (game.bookerId === user.id) return { userId: user.id };
-  const signup = await prisma.signup.findUnique({
-    where: { gameId_userId: { gameId, userId: user.id } },
-    select: { status: true },
-  });
-  if (signup?.status === SignupStatus.CONFIRMED) return { userId: user.id };
-  return { error: "Only players in this game can record matches" };
-}
+// Recording is open to anyone playing that Sunday — see authorizeBookingMember.
+const authorizeRecorder = authorizeBookingMember;
 
 function revalidateGame(gameId: string) {
   revalidatePath(`/games/${gameId}`);
