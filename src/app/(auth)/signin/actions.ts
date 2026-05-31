@@ -4,17 +4,19 @@ import { AuthError } from "next-auth";
 import bcrypt from "bcryptjs";
 import { signIn } from "@/auth";
 import { prisma } from "@/lib/db";
-import { credentialsSchema, signUpSchema } from "@/lib/auth-validation";
+import { credentialsSchema, signUpSchema, emailSchema } from "@/lib/auth-validation";
+import { sendVerificationEmail } from "@/lib/auth-emails";
 
 export async function signInWithGoogle() {
   await signIn("google", { redirectTo: "/home" });
 }
 
 /**
- * Create a new email/password account, then sign the user in.
+ * Create a new email/password account and send a verification email.
  *
- * On success `signIn` throws a redirect (to /home, which sends new users on to
- * onboarding) — so this only ever *returns* when something went wrong.
+ * We do NOT sign the user in — they must confirm their address first (the
+ * credentials provider rejects unverified accounts). Returns a flag the form
+ * uses to switch to a "check your inbox" state.
  */
 export async function signUpWithEmail(formData: FormData) {
   const parsed = signUpSchema.safeParse({
@@ -40,16 +42,9 @@ export async function signUpWithEmail(formData: FormData) {
 
   const passwordHash = await bcrypt.hash(password, 10);
   await prisma.user.create({ data: { email, passwordHash } });
+  await sendVerificationEmail(email);
 
-  try {
-    await signIn("credentials", { email, password, redirectTo: "/home" });
-  } catch (error) {
-    // A redirect is the success path — re-throw so Next can follow it.
-    if (error instanceof AuthError) {
-      return { error: "Account created, but sign-in failed. Try logging in." };
-    }
-    throw error;
-  }
+  return { pendingVerification: true, email };
 }
 
 /** Log in an existing email/password account. */
@@ -64,6 +59,18 @@ export async function signInWithEmail(formData: FormData) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid input" };
   }
 
+  // Pre-check verification so we can show a helpful message + resend link.
+  // The credentials provider also enforces this (defence in depth); here it's
+  // purely for UX. Revealing "this account is unverified" is a minor leak we
+  // accept in exchange for not stranding users on a generic error.
+  const user = await prisma.user.findUnique({
+    where: { email: parsed.data.email },
+    select: { passwordHash: true, emailVerified: true },
+  });
+  if (user?.passwordHash && !user.emailVerified) {
+    return { needsVerification: true, email: parsed.data.email };
+  }
+
   try {
     await signIn("credentials", {
       email: parsed.data.email,
@@ -76,4 +83,28 @@ export async function signInWithEmail(formData: FormData) {
     }
     throw error;
   }
+}
+
+/**
+ * Re-send the verification email for an unverified account. Enumeration-safe:
+ * always reports success, only actually sends when an unverified account exists.
+ */
+export async function resendVerification(formData: FormData) {
+  const parsed = emailSchema.safeParse(
+    String(formData.get("email") ?? "")
+      .trim()
+      .toLowerCase(),
+  );
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid email" };
+  }
+
+  const user = await prisma.user.findUnique({
+    where: { email: parsed.data },
+    select: { passwordHash: true, emailVerified: true },
+  });
+  if (user?.passwordHash && !user.emailVerified) {
+    await sendVerificationEmail(parsed.data);
+  }
+  return { ok: true };
 }

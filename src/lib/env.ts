@@ -33,8 +33,21 @@ export const env = {
   get googleSecret() {
     return optional("AUTH_GOOGLE_SECRET");
   },
-  get resendKey() {
-    return optional("RESEND_API_KEY");
+  // SMTP transport for transactional email (notifications, password reset,
+  // email verification). Returns null when unconfigured so local dev still
+  // boots — sendEmail() degrades to a console warning instead of throwing.
+  get smtp() {
+    const host = optional("SMTP_HOST");
+    if (!host) return null;
+    const port = Number(process.env.SMTP_PORT ?? 587);
+    return {
+      host,
+      port,
+      // Implicit TLS on 465; STARTTLS (upgraded from plaintext) otherwise.
+      secure: process.env.SMTP_SECURE === "1" || port === 465,
+      user: optional("SMTP_USER"),
+      pass: optional("SMTP_PASS"),
+    };
   },
   get emailFrom() {
     return process.env.EMAIL_FROM ?? "Sunday League <noreply@example.com>";

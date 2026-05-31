@@ -7,7 +7,31 @@ import { env } from "@/lib/env";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { SignInForms } from "./_forms";
 
-export default async function SignInPage() {
+const BANNERS: Record<string, { tone: "ok" | "error"; text: string }> = {
+  reset: { tone: "ok", text: "Password updated — log in with your new password." },
+  verified: { tone: "ok", text: "Email verified! You can log in now." },
+  verifyError: {
+    tone: "error",
+    text: "That verification link is invalid or expired. Try logging in to resend it.",
+  },
+};
+
+export default async function SignInPage({
+  searchParams,
+}: {
+  searchParams: Promise<{
+    reset?: string;
+    verified?: string;
+    verifyError?: string;
+  }>;
+}) {
+  const params = await searchParams;
+  const banner =
+    (params.reset && BANNERS.reset) ||
+    (params.verified && BANNERS.verified) ||
+    (params.verifyError && BANNERS.verifyError) ||
+    null;
+
   const session = await auth();
   // Only treat the visitor as signed in if their session user still exists —
   // otherwise a stale cookie (e.g. after a DB reset or deleted account) would
@@ -36,6 +60,18 @@ export default async function SignInPage() {
         >
           <ArrowLeft className="size-4" /> Back
         </Link>
+        {banner && (
+          <div
+            role="status"
+            className={
+              banner.tone === "ok"
+                ? "mb-4 rounded-xl border border-primary/30 bg-primary/5 p-3 text-center text-sm text-foreground"
+                : "mb-4 rounded-xl border border-destructive/30 bg-destructive/5 p-3 text-center text-sm text-destructive"
+            }
+          >
+            {banner.text}
+          </div>
+        )}
         <Card>
           <CardHeader className="space-y-2">
             <CardTitle className="font-display text-2xl">

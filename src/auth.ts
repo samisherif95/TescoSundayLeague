@@ -42,6 +42,12 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         if (!user?.passwordHash) return null;
         const ok = await bcrypt.compare(parsed.data.password, user.passwordHash);
         if (!ok) return null;
+        // Email/password accounts must confirm their address first. Google
+        // accounts arrive pre-verified, and never reach this branch (no
+        // passwordHash). The sign-in action pre-checks this so it can show a
+        // helpful "verify your email" message + resend link instead of the
+        // generic credentials error this null produces.
+        if (!user.emailVerified) return null;
         return {
           id: user.id,
           email: user.email,

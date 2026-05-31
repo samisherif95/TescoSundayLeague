@@ -1,14 +1,20 @@
-import { Resend } from "resend";
+import nodemailer, { type Transporter } from "nodemailer";
 import { env } from "./env";
 
-let _resend: Resend | null = null;
-function client() {
-  if (_resend) return _resend;
-  if (!env.resendKey) {
-    throw new Error("RESEND_API_KEY is required to send email.");
-  }
-  _resend = new Resend(env.resendKey);
-  return _resend;
+let _transport: Transporter | null = null;
+function transport(): Transporter | null {
+  if (_transport) return _transport;
+  const cfg = env.smtp;
+  if (!cfg) return null;
+  _transport = nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    // Omit auth entirely for relays that don't require it (e.g. a local
+    // dev MailHog). Most providers (Gmail, SES, Mailgun) will set both.
+    auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+  });
+  return _transport;
 }
 
 export async function sendEmail(opts: {
@@ -16,11 +22,12 @@ export async function sendEmail(opts: {
   subject: string;
   html: string;
 }) {
-  if (!env.resendKey) {
-    console.warn("RESEND_API_KEY missing — email not sent", opts.subject);
+  const t = transport();
+  if (!t) {
+    console.warn("SMTP not configured — email not sent:", opts.subject);
     return null;
   }
-  return client().emails.send({
+  return t.sendMail({
     from: env.emailFrom,
     to: opts.to,
     subject: opts.subject,

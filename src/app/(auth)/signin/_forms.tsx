@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import { Loader2 } from "lucide-react";
+import Link from "next/link";
+import { Loader2, MailCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,7 +17,12 @@ import {
   emailSchema,
   passwordSchema,
 } from "@/lib/auth-validation";
-import { signInWithEmail, signInWithGoogle, signUpWithEmail } from "./actions";
+import {
+  resendVerification,
+  signInWithEmail,
+  signInWithGoogle,
+  signUpWithEmail,
+} from "./actions";
 
 function GoogleIcon() {
   return (
@@ -65,10 +71,65 @@ function GoogleButton({ enabled }: { enabled: boolean }) {
   );
 }
 
+// Shown after sign-up, or when an unverified user tries to log in. Lets them
+// re-send the verification email without leaving the page.
+function VerifyNotice({
+  email,
+  variant,
+}: {
+  email: string;
+  variant: "signup" | "login";
+}) {
+  const [pending, start] = useTransition();
+  const [resent, setResent] = useState(false);
+
+  return (
+    <div className="space-y-4 text-center">
+      <MailCheck className="mx-auto h-10 w-10 text-primary" />
+      <div className="space-y-1">
+        <p className="text-sm font-medium">
+          {variant === "signup" ? "Almost there — check your email" : "Verify your email to continue"}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          We sent a verification link to <span className="font-medium">{email}</span>.
+          Click it to {variant === "signup" ? "finish setting up your account" : "log in"}.
+        </p>
+      </div>
+      {resent ? (
+        <p className="text-sm text-primary">Verification email re-sent.</p>
+      ) : (
+        <Button
+          variant="outline"
+          className="w-full"
+          disabled={pending}
+          onClick={() => {
+            const fd = new FormData();
+            fd.set("email", email);
+            start(async () => {
+              await resendVerification(fd);
+              setResent(true);
+            });
+          }}
+        >
+          {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Resend verification email
+        </Button>
+      )}
+    </div>
+  );
+}
+
 function EmailPasswordForm({ mode }: { mode: "login" | "signup" }) {
   const [pending, start] = useTransition();
   const [error, setError] = useState<string | null>(null);
+  const [verifyEmail, setVerifyEmail] = useState<string | null>(null);
   const isSignup = mode === "signup";
+
+  if (verifyEmail) {
+    return (
+      <VerifyNotice email={verifyEmail} variant={isSignup ? "signup" : "login"} />
+    );
+  }
 
   return (
     <form
@@ -106,8 +167,12 @@ function EmailPasswordForm({ mode }: { mode: "login" | "signup" }) {
           const result = isSignup
             ? await signUpWithEmail(fd)
             : await signInWithEmail(fd);
-          // Success redirects from the server action; only errors return here.
+          // A successful login redirects from the server action and never
+          // returns here. Sign-up returns `pendingVerification`; an unverified
+          // login returns `needsVerification` — both swap to the verify notice.
           if (result?.error) setError(result.error);
+          else if ("pendingVerification" in (result ?? {}) || "needsVerification" in (result ?? {}))
+            setVerifyEmail((result as { email: string }).email);
         });
       }}
     >
@@ -123,7 +188,17 @@ function EmailPasswordForm({ mode }: { mode: "login" | "signup" }) {
         />
       </div>
       <div className="space-y-2">
-        <Label htmlFor={`${mode}-password`}>Password</Label>
+        <div className="flex items-center justify-between">
+          <Label htmlFor={`${mode}-password`}>Password</Label>
+          {!isSignup && (
+            <Link
+              href="/forgot-password"
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              Forgot password?
+            </Link>
+          )}
+        </div>
         <Input
           id={`${mode}-password`}
           name="password"
