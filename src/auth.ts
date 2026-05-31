@@ -2,8 +2,10 @@ import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 import Google from "next-auth/providers/google";
 import { PrismaAdapter } from "@auth/prisma-adapter";
+import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
+import { credentialsSchema } from "@/lib/auth-validation";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   // Cast: Auth.js types use a slightly stale Prisma surface; runtime is fine.
@@ -15,6 +17,39 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     ...(env.googleId && env.googleSecret
       ? [Google({ clientId: env.googleId, clientSecret: env.googleSecret })]
       : []),
+    // Email + password. Matches an existing user by email and verifies the
+    // password against the stored bcrypt hash. Returns null on any mismatch so
+    // Auth.js reports a generic CredentialsSignin error (no user enumeration).
+    Credentials({
+      id: "credentials",
+      name: "Email and password",
+      credentials: {
+        email: { label: "Email", type: "email" },
+        password: { label: "Password", type: "password" },
+      },
+      async authorize(credentials) {
+        const parsed = credentialsSchema.safeParse({
+          email: String(credentials?.email ?? "")
+            .trim()
+            .toLowerCase(),
+          password: String(credentials?.password ?? ""),
+        });
+        if (!parsed.success) return null;
+        const user = await prisma.user.findUnique({
+          where: { email: parsed.data.email },
+        });
+        // No account, or an OAuth-only account with no password set.
+        if (!user?.passwordHash) return null;
+        const ok = await bcrypt.compare(parsed.data.password, user.passwordHash);
+        if (!ok) return null;
+        return {
+          id: user.id,
+          email: user.email,
+          name: user.name,
+          image: user.image,
+        };
+      },
+    }),
     // Demo-only impersonation. DISABLED unless DEMO_MODE=1.
     // Only matches users whose email ends in @demo.sundayleague.app (seeded fakes).
     Credentials({
