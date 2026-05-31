@@ -263,6 +263,18 @@ model LoginCode {
   createdAt DateTime @default(now())
 }
 
+// Fixed-window rate-limit counters, keyed by "action:identifier" (e.g.
+// "pwreset:email:foo@bar.com" or "signin:ip:1.2.3.4"). `expiresAt` is the end
+// of the current window; once it passes, the next hit resets the count. Used to
+// throttle auth emails (anti email-bomb) and login attempts (anti brute-force).
+model RateLimit {
+  key       String   @id
+  count     Int      @default(0)
+  expiresAt DateTime
+
+  @@index([expiresAt])
+}
+
 // A single match played within a Sunday (Game). A Game can have many — we play
 // several back-to-back until we're tired. Two of the (up to 3) teams play each
 // match. The clock is a server-anchored stopwatch for the CURRENT phase: while
