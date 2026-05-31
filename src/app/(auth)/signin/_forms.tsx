@@ -1,5 +1,22 @@
+"use client";
+
+import { useState, useTransition } from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { signInWithGoogle } from "./actions";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import {
+  PASSWORD_HINT,
+  emailSchema,
+  passwordSchema,
+} from "@/lib/auth-validation";
+import { signInWithEmail, signInWithGoogle, signUpWithEmail } from "./actions";
 
 function GoogleIcon() {
   return (
@@ -24,8 +41,8 @@ function GoogleIcon() {
   );
 }
 
-export function SignInForms({ googleEnabled }: { googleEnabled: boolean }) {
-  if (!googleEnabled) {
+function GoogleButton({ enabled }: { enabled: boolean }) {
+  if (!enabled) {
     return (
       <div>
         <Button variant="outline" className="w-full gap-2" disabled>
@@ -38,7 +55,6 @@ export function SignInForms({ googleEnabled }: { googleEnabled: boolean }) {
       </div>
     );
   }
-
   return (
     <form action={signInWithGoogle}>
       <Button type="submit" variant="outline" size="lg" className="w-full gap-2">
@@ -46,5 +62,134 @@ export function SignInForms({ googleEnabled }: { googleEnabled: boolean }) {
         Continue with Google
       </Button>
     </form>
+  );
+}
+
+function EmailPasswordForm({ mode }: { mode: "login" | "signup" }) {
+  const [pending, start] = useTransition();
+  const [error, setError] = useState<string | null>(null);
+  const isSignup = mode === "signup";
+
+  return (
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault();
+        const fd = new FormData(e.currentTarget);
+        const email = String(fd.get("email") ?? "").trim();
+        const password = String(fd.get("password") ?? "");
+
+        // Client-side format checks for instant feedback. The server actions
+        // re-validate, so this is purely UX — never a security boundary.
+        const emailResult = emailSchema.safeParse(email);
+        if (!emailResult.success) {
+          setError(emailResult.error.issues[0]?.message ?? "Invalid email");
+          return;
+        }
+        if (isSignup) {
+          const pwResult = passwordSchema.safeParse(password);
+          if (!pwResult.success) {
+            setError(pwResult.error.issues[0]?.message ?? "Invalid password");
+            return;
+          }
+          if (password !== String(fd.get("confirmPassword") ?? "")) {
+            setError("Passwords do not match");
+            return;
+          }
+        } else if (!password) {
+          setError("Password is required");
+          return;
+        }
+
+        setError(null);
+        start(async () => {
+          const result = isSignup
+            ? await signUpWithEmail(fd)
+            : await signInWithEmail(fd);
+          // Success redirects from the server action; only errors return here.
+          if (result?.error) setError(result.error);
+        });
+      }}
+    >
+      <div className="space-y-2">
+        <Label htmlFor={`${mode}-email`}>Email</Label>
+        <Input
+          id={`${mode}-email`}
+          name="email"
+          type="email"
+          required
+          autoComplete="email"
+          placeholder="you@example.com"
+        />
+      </div>
+      <div className="space-y-2">
+        <Label htmlFor={`${mode}-password`}>Password</Label>
+        <Input
+          id={`${mode}-password`}
+          name="password"
+          type="password"
+          required
+          autoComplete={isSignup ? "new-password" : "current-password"}
+          placeholder={isSignup ? "Create a password" : "Your password"}
+        />
+        {isSignup && (
+          <p className="text-xs text-muted-foreground">{PASSWORD_HINT}</p>
+        )}
+      </div>
+      {isSignup && (
+        <div className="space-y-2">
+          <Label htmlFor="signup-confirm">Confirm password</Label>
+          <Input
+            id="signup-confirm"
+            name="confirmPassword"
+            type="password"
+            required
+            autoComplete="new-password"
+            placeholder="Re-enter your password"
+          />
+        </div>
+      )}
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
+      <Button type="submit" className="w-full" disabled={pending}>
+        {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+        {isSignup ? "Create account" : "Log in"}
+      </Button>
+    </form>
+  );
+}
+
+export function SignInForms({ googleEnabled }: { googleEnabled: boolean }) {
+  return (
+    <div className="space-y-6">
+      <GoogleButton enabled={googleEnabled} />
+
+      <div className="relative">
+        <div className="absolute inset-0 flex items-center">
+          <span className="w-full border-t border-border" />
+        </div>
+        <div className="relative flex justify-center text-xs uppercase">
+          <span className="bg-card px-2 text-muted-foreground">
+            or with email
+          </span>
+        </div>
+      </div>
+
+      <Tabs defaultValue="login">
+        <TabsList className="w-full">
+          <TabsTrigger value="login">Log in</TabsTrigger>
+          <TabsTrigger value="signup">Sign up</TabsTrigger>
+        </TabsList>
+        <TabsContent value="login" className="mt-4">
+          <EmailPasswordForm mode="login" />
+        </TabsContent>
+        <TabsContent value="signup" className="mt-4">
+          <EmailPasswordForm mode="signup" />
+        </TabsContent>
+      </Tabs>
+    </div>
   );
 }
