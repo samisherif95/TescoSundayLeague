@@ -93,6 +93,22 @@ enum PaymentMethod {
   REVOLUT
 }
 
+// A match is decided in one of three phases:
+//  - REGULAR    : first to 3 goals or 15 minutes.
+//  - GOLDEN_GOAL: a tied regular phase goes to a 5-minute golden-goal period.
+//  - PENALTIES  : a still-tied golden goal is settled on penalties.
+enum MatchPhase {
+  REGULAR
+  GOLDEN_GOAL
+  PENALTIES
+}
+
+enum MatchStatus {
+  LIVE      // clock is running
+  PAUSED    // set up / clock stopped, not yet finished
+  COMPLETED // result is final
+}
+
 model User {
   id                String    @id @default(cuid())
   name              String?
@@ -120,6 +136,7 @@ model User {
   paymentsOwed      PaymentRequest[]   @relation("Debtor")
   paymentsDue       PaymentRequest[]   @relation("Booker")
   pushSubscriptions PushSubscription[]
+  goals             Goal[]
 }
 
 model Game {
@@ -140,6 +157,7 @@ model Game {
   footballBringer User?            @relation("Football", fields: [footballUserId], references: [id])
   signups         Signup[]
   teams           Team[]
+  matches         Match[]
   ratings         Rating[]
   paymentRequests PaymentRequest[]
 
@@ -175,6 +193,11 @@ model Team {
 
   game    Game         @relation(fields: [gameId], references: [id], onDelete: Cascade)
   players TeamPlayer[]
+
+  homeMatches Match[] @relation("HomeTeam")
+  awayMatches Match[] @relation("AwayTeam")
+  wonMatches  Match[] @relation("WinnerTeam")
+  goals       Goal[]
 
   @@unique([gameId, label])
 }
@@ -238,6 +261,62 @@ model LoginCode {
   expiresAt DateTime
   attempts  Int      @default(0)
   createdAt DateTime @default(now())
+}
+
+// A single match played within a Sunday (Game). A Game can have many — we play
+// several back-to-back until we're tired. Two of the (up to 3) teams play each
+// match. The clock is a server-anchored stopwatch for the CURRENT phase: while
+// running, `periodStartedAt` holds the instant the clock last started and
+// `accumulatedMs` holds time banked before that; while paused, `periodStartedAt`
+// is null and `accumulatedMs` holds the full elapsed time. Every client derives
+// the same remaining time from these two fields, so the timer is synced.
+model Match {
+  id              String      @id @default(cuid())
+  gameId          String
+  order           Int // 1, 2, 3… within the day
+  homeTeamId      String
+  awayTeamId      String
+  status          MatchStatus @default(LIVE)
+  phase           MatchPhase  @default(REGULAR)
+  periodStartedAt DateTime? // when the clock last started (null = not running)
+  accumulatedMs   Int         @default(0) // elapsed ms banked in the current phase
+  homePenalties   Int         @default(0)
+  awayPenalties   Int         @default(0)
+  winnerTeamId    String? // set on completion (rules always force a winner)
+  startedAt       DateTime? // first kickoff, for display
+  completedAt     DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  game       Game  @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  homeTeam   Team  @relation("HomeTeam", fields: [homeTeamId], references: [id], onDelete: Cascade)
+  awayTeam   Team  @relation("AwayTeam", fields: [awayTeamId], references: [id], onDelete: Cascade)
+  winnerTeam Team? @relation("WinnerTeam", fields: [winnerTeamId], references: [id])
+  goals      Goal[]
+
+  @@index([gameId, order])
+}
+
+// One goal in a match. `teamId` is the team it counts FOR (so an own goal is
+// recorded against the beneficiary team with `isOwnGoal = true`). `scorerId` is
+// optional — you can bump the score without naming who scored. `clockMs` is the
+// match-clock position when it went in, for the goal timeline.
+model Goal {
+  id        String     @id @default(cuid())
+  matchId   String
+  teamId    String
+  scorerId  String?
+  phase     MatchPhase @default(REGULAR) // REGULAR or GOLDEN_GOAL
+  isOwnGoal Boolean    @default(false)
+  clockMs   Int        @default(0)
+  createdAt DateTime   @default(now())
+
+  match  Match @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  team   Team  @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  scorer User? @relation(fields: [scorerId], references: [id], onDelete: SetNull)
+
+  @@index([matchId])
+  @@index([scorerId])
 }
 
 // Web Push subscription. One row per device, so a user may have several.
