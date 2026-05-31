@@ -29,21 +29,8 @@ type Props = {
 };
 
 export function AppHeader({ user, isDemo }: Props) {
-  const pathname = usePathname();
   const router = useRouter();
   const { theme, setTheme } = useTheme();
-
-  const NavLink = ({ href, label }: { href: string; label: string }) => (
-    <Link
-      href={href}
-      className={cn(
-        "rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
-        pathname === href && "bg-muted text-foreground",
-      )}
-    >
-      {label}
-    </Link>
-  );
 
   const initial = (user.name ?? "?").slice(0, 1).toUpperCase();
 
@@ -116,6 +103,21 @@ export function AppHeader({ user, isDemo }: Props) {
         </div>
       </div>
     </header>
+  );
+}
+
+function NavLink({ href, label }: { href: string; label: string }) {
+  const pathname = usePathname();
+  return (
+    <Link
+      href={href}
+      className={cn(
+        "rounded-md px-3 py-2 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground",
+        pathname === href && "bg-muted text-foreground",
+      )}
+    >
+      {label}
+    </Link>
   );
 }
 

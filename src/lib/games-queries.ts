@@ -69,6 +69,20 @@ const gameInclude = {
       },
     },
   },
+  matches: {
+    orderBy: { order: "asc" },
+    include: {
+      homeTeam: { select: { id: true, label: true } },
+      awayTeam: { select: { id: true, label: true } },
+      winnerTeam: { select: { id: true, label: true } },
+      goals: {
+        orderBy: { createdAt: "asc" },
+        include: {
+          scorer: { select: { id: true, name: true, image: true } },
+        },
+      },
+    },
+  },
   paymentRequests: {
     include: {
       debtor: { select: { id: true, name: true, image: true } },

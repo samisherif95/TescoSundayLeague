@@ -12,8 +12,11 @@ import {
   SignupStatus,
 } from "@/generated/prisma/enums";
 import { MAX_PLAYERS, MIN_PLAYERS, isSignupOpen } from "@/lib/game";
+import { deriveScore } from "@/lib/match";
 import { SignupControls } from "./_signup-controls";
 import { PaymentsPanel } from "./_payments-panel";
+import { MatchDay } from "./_match-day";
+import { TeamsEditor } from "./_teams-editor";
 
 export default async function GameDetailPage({
   params,
@@ -39,6 +42,68 @@ export default async function GameDetailPage({
   );
   const isBooker = game.bookerId === user.id;
   const signupsOpen = isSignupOpen(game);
+
+  // Anyone playing that Sunday can run the timer and record matches.
+  const canRecord =
+    user.isAdmin ||
+    isBooker ||
+    mySignup?.status === SignupStatus.CONFIRMED;
+
+  const showMatchDay =
+    game.teams.length >= 2 &&
+    (game.status === GameStatus.BOOKED ||
+      game.status === GameStatus.COMPLETED);
+
+  const matchTeams = game.teams.map((t) => ({
+    id: t.id,
+    label: t.label,
+    players: t.players.map((tp) => ({
+      userId: tp.userId,
+      name: tp.user.name,
+    })),
+  }));
+
+  const teamsData = game.teams.map((t) => ({
+    id: t.id,
+    label: t.label,
+    players: t.players.map((tp) => ({
+      userId: tp.userId,
+      name: tp.user.name,
+      image: tp.user.image,
+    })),
+  }));
+
+  const matchesData = game.matches.map((m) => {
+    const score = deriveScore(m.goals, m.homeTeamId, m.awayTeamId);
+    return {
+      id: m.id,
+      order: m.order,
+      homeTeamId: m.homeTeamId,
+      awayTeamId: m.awayTeamId,
+      homeLabel: m.homeTeam.label,
+      awayLabel: m.awayTeam.label,
+      status: m.status,
+      phase: m.phase,
+      periodStartedAt: m.periodStartedAt
+        ? m.periodStartedAt.getTime()
+        : null,
+      accumulatedMs: m.accumulatedMs,
+      homeScore: score.home,
+      awayScore: score.away,
+      homePenalties: m.homePenalties,
+      awayPenalties: m.awayPenalties,
+      winnerTeamId: m.winnerTeamId,
+      goals: m.goals.map((g) => ({
+        id: g.id,
+        teamId: g.teamId,
+        scorerId: g.scorerId,
+        scorerName: g.scorer?.name ?? null,
+        phase: g.phase,
+        isOwnGoal: g.isOwnGoal,
+        clockMs: g.clockMs,
+      })),
+    };
+  });
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 px-4 py-6">
@@ -204,31 +269,24 @@ export default async function GameDetailPage({
       )}
 
       {game.teams.length > 0 && (
-        <section className="space-y-3">
-          <h2 className="text-lg font-semibold">Teams</h2>
-          <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {game.teams.map((team) => (
-              <Card key={team.id}>
-                <CardContent className="space-y-2 p-4">
-                  <div className="font-semibold">Team {team.label}</div>
-                  {team.players.map((tp) => (
-                    <PlayerPill
-                      key={tp.userId}
-                      name={tp.user.name}
-                      image={tp.user.image}
-                    />
-                  ))}
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-          {game.teams.length === 3 && (
-            <p className="text-xs text-muted-foreground">
-              Team C rotates in against the losing team and can borrow players
-              if short.
-            </p>
-          )}
-        </section>
+        <TeamsEditor
+          gameId={game.id}
+          teams={teamsData}
+          editable={canRecord}
+        />
+      )}
+
+      {showMatchDay && (
+        <MatchDay
+          gameId={game.id}
+          canRecord={canRecord}
+          teams={matchTeams}
+          matches={matchesData}
+          // Per-request server time, so each device can correct for clock drift
+          // and show the same synced countdown.
+          // eslint-disable-next-line react-hooks/purity
+          serverNow={Date.now()}
+        />
       )}
 
       {game.paymentRequests.length > 0 &&
