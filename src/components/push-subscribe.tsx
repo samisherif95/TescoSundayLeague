@@ -28,6 +28,10 @@ export function PushSubscribe() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    // Mount-time browser/capability detection: this must run in an effect, not
+    // a lazy initializer, because the server has no `navigator` and rendering a
+    // different value on the client would cause a hydration mismatch.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setIsIOS(
       /iPad|iPhone|iPod/.test(navigator.userAgent) &&
         !("MSStream" in window),
