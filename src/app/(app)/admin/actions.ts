@@ -3,17 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import {
-  GameStatus,
-  SignupStatus,
-} from "@/generated/prisma/enums";
+import { GameStatus } from "@/generated/prisma/enums";
 import { requireAdmin } from "@/lib/session";
-import {
-  MIN_PLAYERS,
-  generateTeams,
-  nextSundayNoon,
-  pickRandom,
-} from "@/lib/game";
+import { nextSundayNoon } from "@/lib/game";
+import { lockGame } from "@/lib/lock";
 
 const editSchema = z.object({
   gameId: z.string().min(1),
@@ -64,52 +57,21 @@ export async function editGame(formData: FormData) {
   return { ok: true as const };
 }
 
-export async function forceLock(formData: FormData) {
+/**
+ * Admin safeguard: lock a game right now — pick the booker, assign duties,
+ * generate teams, and notify everyone — without waiting on the Friday cron.
+ * Delegates to the shared {@link lockGame} so it behaves identically to the
+ * cron (fair booker rotation, bibs/football, emails + push).
+ */
+export async function lockGameAction(
+  gameId: string,
+): Promise<{ ok: true } | { error: string }> {
   await requireAdmin();
-  const gameId = String(formData.get("gameId") ?? "");
-  const game = await prisma.game.findUnique({
-    where: { id: gameId },
-    include: {
-      signups: {
-        where: { status: SignupStatus.CONFIRMED },
-        include: {
-          user: { select: { id: true, skillScore: true } },
-        },
-      },
-    },
-  });
-  if (!game) return { error: "Not found" };
-  if (game.status !== GameStatus.OPEN) return { error: "Already locked" };
-  if (game.signups.length < MIN_PLAYERS) {
-    return {
-      error: `Need at least ${MIN_PLAYERS} confirmed players (have ${game.signups.length}).`,
-    };
-  }
-  const booker = pickRandom(game.signups.map((s) => s.user));
-  const teams = generateTeams(
-    game.signups.map((s) => ({
-      userId: s.user.id,
-      position: s.position,
-      skillScore: s.user.skillScore,
-    })),
-  );
-  await prisma.$transaction(async (tx) => {
-    await tx.game.update({
-      where: { id: game.id },
-      data: { status: GameStatus.LOCKED, bookerId: booker.id },
-    });
-    await tx.team.deleteMany({ where: { gameId: game.id } });
-    for (const t of teams) {
-      await tx.team.create({
-        data: {
-          gameId: game.id,
-          label: t.label,
-          players: { create: t.players.map((p) => ({ userId: p.userId })) },
-        },
-      });
-    }
-  });
-  revalidatePath(`/games/${game.id}`);
+  if (!gameId) return { error: "Missing game id" };
+  const result = await lockGame(gameId);
+  if (!result.ok) return { error: result.error };
+  revalidatePath(`/games/${gameId}`);
   revalidatePath("/admin");
-  return { ok: true as const };
+  revalidatePath("/");
+  return { ok: true };
 }

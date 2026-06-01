@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { authorizeBookingMember } from "@/lib/booking-access";
+import { authorizeAdmin } from "@/lib/booking-access";
 
 const moveSchema = z.object({
   gameId: z.string().min(1),
@@ -13,9 +13,9 @@ const moveSchema = z.object({
 
 /**
  * Move a player into a different team within the same game (drag-and-drop on
- * the game page). Open to anyone in the booking, so we can shuffle teams on the
- * day if we fancy different sides. A player belongs to exactly one team, so this
- * removes them from their current team and adds them to the target.
+ * the game page). Admin-only — keeping the balanced lineup under one person's
+ * control avoids tug-of-war shuffling. A player belongs to exactly one team, so
+ * this removes them from their current team and adds them to the target.
  */
 export async function moveTeamPlayerAction(
   input: z.infer<typeof moveSchema>,
@@ -24,7 +24,7 @@ export async function moveTeamPlayerAction(
   if (!parsed.success) return { error: "Invalid input" };
   const { gameId, userId, toTeamId } = parsed.data;
 
-  const auth = await authorizeBookingMember(gameId);
+  const auth = await authorizeAdmin();
   if ("error" in auth) return auth;
 
   const toTeam = await prisma.team.findFirst({

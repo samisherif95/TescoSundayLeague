@@ -23,6 +23,7 @@ import { PaymentsPanel } from "./_payments-panel";
 import { MatchDay } from "./_match-day";
 import { TeamsEditor } from "./_teams-editor";
 import { GameDetailsLine } from "./_details-editor";
+import { AdminLockCard } from "./_admin-lock";
 
 export default async function GameDetailPage({
   params,
@@ -187,6 +188,14 @@ export default async function GameDetailPage({
         </Card>
       )}
 
+      {game.status === GameStatus.OPEN && user.isAdmin && (
+        <AdminLockCard
+          gameId={game.id}
+          confirmedCount={confirmed.length}
+          minPlayers={MIN_PLAYERS}
+        />
+      )}
+
       {game.status === GameStatus.BOOKED && isBooker && (
         <Card>
           <CardContent className="p-5">
@@ -289,7 +298,7 @@ export default async function GameDetailPage({
         <TeamsEditor
           gameId={game.id}
           teams={teamsData}
-          editable={canRecord}
+          editable={user.isAdmin}
         />
       )}
 

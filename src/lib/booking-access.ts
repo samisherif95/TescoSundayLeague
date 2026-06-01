@@ -27,3 +27,19 @@ export async function authorizeBookingMember(
   if (signup?.status === SignupStatus.CONFIRMED) return { userId: user.id };
   return { error: "Only players in this game can do this" };
 }
+
+/**
+ * Authorize an admin-only mutation. Unlike {@link requireAdmin} (which redirects,
+ * for page loads), this returns an `error` object so Server Functions can hand a
+ * toast back to the client instead of bouncing them to the home page.
+ *
+ * Server Functions are reachable by direct POST, so this is the real security
+ * boundary — the UI hiding a control is only cosmetic.
+ */
+export async function authorizeAdmin(): Promise<
+  { userId: string } | { error: string }
+> {
+  const user = await requireOnboardedUser();
+  if (!user.isAdmin) return { error: "Only an admin can do this" };
+  return { userId: user.id };
+}
