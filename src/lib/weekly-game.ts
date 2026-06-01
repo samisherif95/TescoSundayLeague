@@ -27,6 +27,7 @@ export async function openWeeklyGame(
   const when = kickoff.toLocaleDateString("en-GB", {
     day: "numeric",
     month: "long",
+    timeZone: "Europe/London",
   });
 
   const users = await prisma.user.findMany({

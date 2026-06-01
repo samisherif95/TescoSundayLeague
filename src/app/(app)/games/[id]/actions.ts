@@ -47,6 +47,7 @@ export async function leaveGameAction(formData: FormData) {
   const when = game?.kickoffAt.toLocaleDateString("en-GB", {
     day: "numeric",
     month: "long",
+    timeZone: "Europe/London",
   });
 
   // Waitlister promoted into the freed spot.

@@ -113,6 +113,7 @@ export default async function HomePage() {
                     weekday: "long",
                     day: "numeric",
                     month: "long",
+                    timeZone: "Europe/London",
                   })}
                 </div>
                 <dl className="mt-3 flex flex-wrap gap-x-5 gap-y-1 text-sm text-muted-foreground">
@@ -121,6 +122,7 @@ export default async function HomePage() {
                     {game.kickoffAt.toLocaleTimeString("en-GB", {
                       hour: "2-digit",
                       minute: "2-digit",
+                      timeZone: "Europe/London",
                     })}
                   </div>
                   <div className="flex items-center gap-1.5">

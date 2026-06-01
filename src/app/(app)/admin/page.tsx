@@ -60,6 +60,7 @@ export default async function AdminPage() {
                         month: "long",
                         hour: "2-digit",
                         minute: "2-digit",
+                        timeZone: "Europe/London",
                       })}
                     </Link>
                     <Badge variant="outline">{g.status}</Badge>
