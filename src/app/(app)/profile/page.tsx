@@ -85,6 +85,7 @@ export default async function ProfilePage() {
                       day: "numeric",
                       month: "short",
                       year: "numeric",
+                      timeZone: "Europe/London",
                     })}
                   </div>
                   <div className="text-muted-foreground">{s.game.pitchName}</div>

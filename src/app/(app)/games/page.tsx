@@ -40,6 +40,7 @@ export default async function GamesHistoryPage() {
                         day: "numeric",
                         month: "short",
                         year: "numeric",
+                        timeZone: "Europe/London",
                       })}
                     </Link>
                     <span className="text-sm text-muted-foreground">

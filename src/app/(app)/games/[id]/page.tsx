@@ -11,12 +11,18 @@ import {
   GameStatus,
   SignupStatus,
 } from "@/generated/prisma/enums";
-import { MAX_PLAYERS, MIN_PLAYERS, isSignupOpen } from "@/lib/game";
+import {
+  MAX_PLAYERS,
+  MIN_PLAYERS,
+  isSignupOpen,
+  londonInputValue,
+} from "@/lib/game";
 import { deriveScore } from "@/lib/match";
 import { SignupControls } from "./_signup-controls";
 import { PaymentsPanel } from "./_payments-panel";
 import { MatchDay } from "./_match-day";
 import { TeamsEditor } from "./_teams-editor";
+import { GameDetailsLine } from "./_details-editor";
 
 export default async function GameDetailPage({
   params,
@@ -48,6 +54,12 @@ export default async function GameDetailPage({
     user.isAdmin ||
     isBooker ||
     mySignup?.status === SignupStatus.CONFIRMED;
+
+  // Same crowd can tweak the kickoff time / location, until the game's done.
+  const canEditDetails =
+    canRecord &&
+    game.status !== GameStatus.COMPLETED &&
+    game.status !== GameStatus.CANCELLED;
 
   const showMatchDay =
     game.teams.length >= 2 &&
@@ -113,16 +125,21 @@ export default async function GameDetailPage({
             weekday: "long",
             day: "numeric",
             month: "long",
+            timeZone: "Europe/London",
           })}
         </h1>
-        <p className="text-sm text-muted-foreground">
-          {game.kickoffAt.toLocaleTimeString("en-GB", {
+        <GameDetailsLine
+          gameId={game.id}
+          editable={canEditDetails}
+          timeLabel={game.kickoffAt.toLocaleTimeString("en-GB", {
             hour: "2-digit",
             minute: "2-digit",
+            timeZone: "Europe/London",
           })}
-          {" · "}
-          {game.pitchName}
-        </p>
+          pitchName={game.pitchName}
+          pitchBookingUrl={game.pitchBookingUrl}
+          kickoffLocal={londonInputValue(game.kickoffAt)}
+        />
         <div className="mt-2 flex flex-wrap gap-2">
           <Badge variant="outline">{game.status}</Badge>
           {game.bookerId && (

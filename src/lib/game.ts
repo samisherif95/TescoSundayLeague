@@ -201,7 +201,7 @@ export function nextSundayNoon(now = new Date()): Date {
 export const LONDON_TZ = "Europe/London";
 
 /** The London wall-clock parts of a UTC instant. */
-function londonParts(d: Date): {
+export function londonParts(d: Date): {
   year: number;
   month: number; // 1-12
   day: number;
@@ -234,9 +234,10 @@ function londonParts(d: Date): {
 
 /**
  * The UTC instant for a given London wall-clock time (DST-aware).
- * 18:00 is never near a DST transition, so a single correction pass is exact.
+ * Daytime kickoffs (and 18:00 deadlines) are never near a DST transition — which
+ * happens at 01:00/02:00 — so a single correction pass is exact.
  */
-function londonWallTimeToUtc(
+export function londonWallTimeToUtc(
   year: number,
   month1: number, // 1-12
   day: number,
@@ -247,6 +248,17 @@ function londonWallTimeToUtc(
   const p = londonParts(new Date(guess));
   const mapped = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
   return new Date(guess - (mapped - guess));
+}
+
+/**
+ * Format a UTC instant as the London wall-clock value an `<input type="datetime-local">`
+ * expects: `YYYY-MM-DDTHH:mm`. The inverse of feeding that string back through
+ * {@link londonWallTimeToUtc}, so the editor round-trips without timezone drift.
+ */
+export function londonInputValue(d: Date): string {
+  const p = londonParts(d);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`;
 }
 
 /**
