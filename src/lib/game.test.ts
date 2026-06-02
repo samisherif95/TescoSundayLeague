@@ -260,9 +260,11 @@ describe("generatePaymentLink", () => {
     ).toBe("https://monzo.me/alexc/7.50?d=Football%207-Jun");
   });
 
-  it("builds a Revolut link with the GBP-suffixed amount", () => {
-    expect(generatePaymentLink(PaymentMethod.REVOLUT, "alexc", 750, "x")).toBe(
-      "https://revolut.me/alexc/7.50GBP",
+  it("builds a Revolut link with the amount in pence and currency/note query params", () => {
+    expect(
+      generatePaymentLink(PaymentMethod.REVOLUT, "@alexc", 750, "Football 7-Jun"),
+    ).toBe(
+      "https://revolut.me/alexc?currency=GBP&amount=750&note=Football%207-Jun",
     );
   });
 });
