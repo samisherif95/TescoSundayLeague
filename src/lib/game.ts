@@ -134,9 +134,10 @@ export function calcSplit(
 /**
  * Build a payment-request URL for the booker's chosen method.
  *  - MONZO:   https://monzo.me/<handle>/<amount>?d=<description>
- *  - REVOLUT: https://revolut.me/<handle>/<amount>GBP
- * (Revolut .me links take the amount as `<amount><CURRENCY>` appended to the
- * handle; description isn't supported in the URL.)
+ *  - REVOLUT: https://revolut.me/<handle>?currency=GBP&amount=<pence>&note=<description>
+ * (Revolut .me links take the amount in minor units/pence as an integer query
+ * param — e.g. `amount=1800` is £18.00 — alongside the currency and an optional
+ * free-text note.)
  */
 export function generatePaymentLink(
   method: PaymentMethod,
@@ -144,11 +145,11 @@ export function generatePaymentLink(
   amountPence: number,
   description: string,
 ): string {
-  const amountPounds = (amountPence / 100).toFixed(2);
   const cleanHandle = handle.trim().replace(/^@/, "");
   if (method === PaymentMethod.REVOLUT) {
-    return `https://revolut.me/${encodeURIComponent(cleanHandle)}/${amountPounds}GBP`;
+    return `https://revolut.me/${encodeURIComponent(cleanHandle)}?currency=GBP&amount=${amountPence}&note=${encodeURIComponent(description)}`;
   }
+  const amountPounds = (amountPence / 100).toFixed(2);
   return `https://monzo.me/${encodeURIComponent(cleanHandle)}/${amountPounds}?d=${encodeURIComponent(description)}`;
 }
 
