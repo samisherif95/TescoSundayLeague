@@ -16,6 +16,7 @@ import {
   londonWallTimeToUtc,
   londonInputValue,
   type DraftablePlayer,
+  type DraftedTeam,
   type BookerCandidate,
 } from "@/lib/game";
 
@@ -31,6 +32,10 @@ function londonTime(d: Date): string {
 
 function player(userId: string, skillScore: number): DraftablePlayer {
   return { userId, position: Position.MID, skillScore };
+}
+
+function guest(guestId: string, skillScore: number): DraftablePlayer {
+  return { guestId, skillScore };
 }
 
 describe("nextSundayNoon", () => {
@@ -215,13 +220,38 @@ describe("generateTeams", () => {
     expect(new Set(ids).size).toBe(14);
   });
 
+  it("slots guests into teams alongside members, tagged by guestId", () => {
+    // 8 members + 2 guests = a full pair of teams that only fills with the +1s.
+    const roster = [
+      ...Array.from({ length: 8 }, (_, i) => player(`p${i}`, 3)),
+      guest("g1", 3),
+      guest("g2", 3),
+    ];
+    const teams = generateTeams(roster);
+    const slots = teams.flatMap((t) => t.players);
+    expect(slots).toHaveLength(10);
+    const guestSlots = slots.filter((s) => s.guestId);
+    expect(guestSlots.map((s) => s.guestId).sort()).toEqual(["g1", "g2"]);
+    // Members keep userId, guests keep guestId — never both.
+    for (const s of slots) {
+      expect(Boolean(s.userId) !== Boolean(s.guestId)).toBe(true);
+    }
+  });
+
+  it("counts guests toward the minimum so a thin week can still field teams", () => {
+    // Only 9 members, but a +1 brings it to the minimum of 10.
+    const tooFew = Array.from({ length: 9 }, (_, i) => player(`p${i}`, 3));
+    expect(() => generateTeams(tooFew)).toThrow();
+    expect(() => generateTeams([...tooFew, guest("g1", 3)])).not.toThrow();
+  });
+
   it("balances A and B closely on skill (strongest 10)", () => {
     const skills = [9, 8.5, 8, 7.5, 7, 6.5, 6, 5.5, 5, 4.5];
     const players = skills.map((s, i) => player(`p${i}`, s));
     const [a, b] = generateTeams(players);
-    const sum = (t: { players: { userId: string }[] }) =>
+    const sum = (t: DraftedTeam) =>
       t.players.reduce(
-        (n, p) => n + skills[Number(p.userId.slice(1))],
+        (n, p) => n + skills[Number((p.userId ?? "0").slice(1))],
         0,
       );
     // Snake-ish draft keeps the two main teams within one skill-step.

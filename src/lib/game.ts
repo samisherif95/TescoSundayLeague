@@ -3,6 +3,11 @@ import { GameStatus, PaymentMethod, Position } from "@/generated/prisma/enums";
 export const MIN_PLAYERS = 10;
 export const MAX_PLAYERS = 15;
 export const TEAM_SIZE = 5;
+/**
+ * Skill used to balance a guest into the teams. Guests have no rating history,
+ * so they sit at the neutral default (same as a brand-new member's skillScore).
+ */
+export const GUEST_SKILL_SCORE = 3.0;
 
 /** Cryptographically random pick from a non-empty array. */
 export function pickRandom<T>(items: readonly T[]): T {
@@ -13,16 +18,30 @@ export function pickRandom<T>(items: readonly T[]): T {
   return items[idx];
 }
 
-export type DraftablePlayer = {
-  userId: string;
-  position: Position;
+/**
+ * Identifies who occupies a team slot: either a member (`userId`) or a guest
+ * (`guestId`). Exactly one is set — the same shape `TeamPlayer` rows take.
+ */
+export type TeamMemberRef =
+  | { userId: string; guestId?: undefined }
+  | { userId?: undefined; guestId: string };
+
+export type DraftablePlayer = TeamMemberRef & {
+  // Position is informational only — balancing is purely on skillScore — so
+  // it's optional (guests have none).
+  position?: Position;
   skillScore: number;
 };
 
 export type DraftedTeam = {
   label: "A" | "B" | "C";
-  players: { userId: string }[];
+  players: TeamMemberRef[];
 };
+
+/** Strip a draftable down to just its member/guest identity. */
+function memberRef(p: DraftablePlayer): TeamMemberRef {
+  return p.userId ? { userId: p.userId } : { guestId: p.guestId! };
+}
 
 /**
  * Balanced team generator for our 2-or-3-teams-of-5 format.
@@ -71,13 +90,13 @@ export function generateTeams(allPlayers: DraftablePlayer[]): DraftedTeam[] {
   }
 
   const teams: DraftedTeam[] = [
-    { label: "A", players: teamA.map((p) => ({ userId: p.userId })) },
-    { label: "B", players: teamB.map((p) => ({ userId: p.userId })) },
+    { label: "A", players: teamA.map(memberRef) },
+    { label: "B", players: teamB.map(memberRef) },
   ];
   if (overflow.length > 0) {
     teams.push({
       label: "C",
-      players: overflow.map((p) => ({ userId: p.userId })),
+      players: overflow.map(memberRef),
     });
   }
   return teams;

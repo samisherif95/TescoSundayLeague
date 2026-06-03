@@ -57,6 +57,12 @@ const gameInclude = {
   },
   bibsBringer: { select: { id: true, name: true } },
   footballBringer: { select: { id: true, name: true } },
+  guests: {
+    orderBy: { createdAt: "asc" },
+    include: {
+      host: { select: { id: true, name: true } },
+    },
+  },
   teams: {
     orderBy: { label: "asc" },
     include: {
@@ -64,6 +70,9 @@ const gameInclude = {
         include: {
           user: {
             select: { id: true, name: true, image: true },
+          },
+          guest: {
+            include: { host: { select: { id: true, name: true } } },
           },
         },
       },

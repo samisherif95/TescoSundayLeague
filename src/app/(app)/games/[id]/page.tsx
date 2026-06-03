@@ -24,6 +24,11 @@ import { MatchDay } from "./_match-day";
 import { TeamsEditor } from "./_teams-editor";
 import { GameDetailsLine } from "./_details-editor";
 import { AdminLockCard } from "./_admin-lock";
+import {
+  AddGuestButton,
+  AllowGuestsToggle,
+  RemoveGuestButton,
+} from "./_guest-controls";
 
 export default async function GameDetailPage({
   params,
@@ -50,6 +55,26 @@ export default async function GameDetailPage({
   const isBooker = game.bookerId === user.id;
   const signupsOpen = isSignupOpen(game);
 
+  // +1 guests count as bodies on the pitch, so the roster (and "more needed")
+  // is members + guests.
+  const guests = game.guests;
+  const rosterCount = confirmed.length + guests.length;
+  const amConfirmed = mySignup?.status === SignupStatus.CONFIRMED;
+  const canAddGuest =
+    game.status === GameStatus.OPEN &&
+    signupsOpen &&
+    game.allowGuests &&
+    amConfirmed &&
+    rosterCount < MAX_PLAYERS;
+  // How many +1s each member brought — used to label their payment row.
+  const guestCountByHost = new Map<string, number>();
+  for (const g of guests) {
+    guestCountByHost.set(
+      g.hostUserId,
+      (guestCountByHost.get(g.hostUserId) ?? 0) + 1,
+    );
+  }
+
   // Anyone playing that Sunday can run the timer and record matches.
   const canRecord =
     user.isAdmin ||
@@ -67,23 +92,37 @@ export default async function GameDetailPage({
     (game.status === GameStatus.BOOKED ||
       game.status === GameStatus.COMPLETED);
 
+  // Match recording only names real members as scorers — guests have no
+  // account to attribute to (their goals are still counted for the team, just
+  // without a named scorer), so they're filtered out of the scorer lists.
   const matchTeams = game.teams.map((t) => ({
     id: t.id,
     label: t.label,
-    players: t.players.map((tp) => ({
-      userId: tp.userId,
-      name: tp.user.name,
-    })),
+    players: t.players
+      .filter((tp) => tp.user !== null)
+      .map((tp) => ({
+        userId: tp.user!.id,
+        name: tp.user!.name,
+      })),
   }));
 
   const teamsData = game.teams.map((t) => ({
     id: t.id,
     label: t.label,
-    players: t.players.map((tp) => ({
-      userId: tp.userId,
-      name: tp.user.name,
-      image: tp.user.image,
-    })),
+    players: t.players.map((tp) =>
+      tp.guest
+        ? {
+            id: tp.id,
+            name: `${tp.guest.host.name ?? "Someone"} +1`,
+            image: null,
+            isGuest: true,
+          }
+        : {
+            id: tp.id,
+            name: tp.user!.name,
+            image: tp.user!.image,
+          },
+    ),
   }));
 
   const matchesData = game.matches.map((m) => {
@@ -191,9 +230,13 @@ export default async function GameDetailPage({
       {game.status === GameStatus.OPEN && user.isAdmin && (
         <AdminLockCard
           gameId={game.id}
-          confirmedCount={confirmed.length}
+          confirmedCount={rosterCount}
           minPlayers={MIN_PLAYERS}
         />
+      )}
+
+      {game.status === GameStatus.OPEN && user.isAdmin && (
+        <AllowGuestsToggle gameId={game.id} allow={game.allowGuests} />
       )}
 
       {game.status === GameStatus.BOOKED && isBooker && (
@@ -247,12 +290,12 @@ export default async function GameDetailPage({
           <h2 className="text-lg font-semibold">
             Confirmed
             <span className="ml-2 text-sm font-normal text-muted-foreground">
-              {confirmed.length}/{MAX_PLAYERS}
+              {rosterCount}/{MAX_PLAYERS}
             </span>
           </h2>
-          {confirmed.length < MIN_PLAYERS && (
+          {rosterCount < MIN_PLAYERS && (
             <span className="text-xs text-muted-foreground">
-              {MIN_PLAYERS - confirmed.length} more needed
+              {MIN_PLAYERS - rosterCount} more needed
             </span>
           )}
         </header>
@@ -265,12 +308,28 @@ export default async function GameDetailPage({
               position={s.position}
             />
           ))}
-          {confirmed.length === 0 && (
+          {guests.map((g) => (
+            <PlayerPill
+              key={g.id}
+              name={`${g.host.name ?? "Someone"} +1`}
+              trailing={
+                g.hostUserId === user.id || user.isAdmin ? (
+                  <RemoveGuestButton guestId={g.id} />
+                ) : (
+                  <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+                    +1
+                  </span>
+                )
+              }
+            />
+          ))}
+          {rosterCount === 0 && (
             <p className="text-sm text-muted-foreground">
               No one signed up yet — be the first.
             </p>
           )}
         </div>
+        {canAddGuest && <AddGuestButton gameId={game.id} />}
       </section>
 
       {waitlist.length > 0 && (
@@ -338,6 +397,7 @@ export default async function GameDetailPage({
                 amountPence: p.amountPence,
                 paymentLink: p.paymentLink,
                 paid: p.paidStatus === "MARKED_PAID",
+                guestCount: guestCountByHost.get(p.debtorId) ?? 0,
               }))}
             />
           </section>

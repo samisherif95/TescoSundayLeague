@@ -21,7 +21,13 @@ import { PlayerPill } from "@/components/player-pill";
 import { cn } from "@/lib/utils";
 import { moveTeamPlayerAction } from "./team-actions";
 
-type Player = { userId: string; name: string | null; image: string | null };
+type Player = {
+  // The team-slot id (TeamPlayer.id) — unique per slot, members or guests.
+  id: string;
+  name: string | null;
+  image: string | null;
+  isGuest?: boolean;
+};
 export type EditableTeam = {
   id: string;
   label: "A" | "B" | "C";
@@ -31,7 +37,7 @@ export type EditableTeam = {
 /** A stable signature of who's in which team — used to resync after refresh. */
 function membershipSig(teams: EditableTeam[]): string {
   return teams
-    .map((t) => `${t.id}:${t.players.map((p) => p.userId).join(",")}`)
+    .map((t) => `${t.id}:${t.players.map((p) => p.id).join(",")}`)
     .join("|");
 }
 
@@ -69,19 +75,19 @@ export function TeamsEditor({
 
   const allPlayers = teams.flatMap((t) => t.players);
   const activePlayer = activeId
-    ? (allPlayers.find((p) => p.userId === activeId) ?? null)
+    ? (allPlayers.find((p) => p.id === activeId) ?? null)
     : null;
 
   function handleDragEnd(event: DragEndEvent) {
     setActiveId(null);
     const { active, over } = event;
     if (!over) return;
-    const userId = String(active.id);
+    const teamPlayerId = String(active.id);
     const fromTeamId = active.data.current?.fromTeamId as string | undefined;
     const toTeamId = String(over.id);
     if (!fromTeamId || fromTeamId === toTeamId) return;
 
-    const player = allPlayers.find((p) => p.userId === userId);
+    const player = allPlayers.find((p) => p.id === teamPlayerId);
     if (!player) return;
 
     const previous = teams;
@@ -89,7 +95,7 @@ export function TeamsEditor({
     setTeams((ts) =>
       ts.map((t) => {
         if (t.id === fromTeamId) {
-          return { ...t, players: t.players.filter((p) => p.userId !== userId) };
+          return { ...t, players: t.players.filter((p) => p.id !== teamPlayerId) };
         }
         if (t.id === toTeamId) {
           return { ...t, players: [...t.players, player] };
@@ -98,7 +104,7 @@ export function TeamsEditor({
       }),
     );
 
-    moveTeamPlayerAction({ gameId, userId, toTeamId })
+    moveTeamPlayerAction({ gameId, teamPlayerId, toTeamId })
       .then((r) => {
         if ("error" in r) {
           toast.error(r.error);
@@ -129,7 +135,12 @@ export function TeamsEditor({
               <CardContent className="space-y-2 p-4">
                 <div className="font-semibold">Team {team.label}</div>
                 {team.players.map((p) => (
-                  <PlayerPill key={p.userId} name={p.name} image={p.image} />
+                  <PlayerPill
+                    key={p.id}
+                    name={p.name}
+                    image={p.image}
+                    trailing={p.isGuest ? <GuestTag /> : undefined}
+                  />
                 ))}
               </CardContent>
             </Card>
@@ -159,14 +170,18 @@ export function TeamsEditor({
           {teams.map((team) => (
             <DroppableTeam key={team.id} team={team}>
               {team.players.map((p) => (
-                <DraggablePlayer key={p.userId} player={p} teamId={team.id} />
+                <DraggablePlayer key={p.id} player={p} teamId={team.id} />
               ))}
             </DroppableTeam>
           ))}
         </div>
         <DragOverlay>
           {activePlayer ? (
-            <PlayerPill name={activePlayer.name} image={activePlayer.image} />
+            <PlayerPill
+              name={activePlayer.name}
+              image={activePlayer.image}
+              trailing={activePlayer.isGuest ? <GuestTag /> : undefined}
+            />
           ) : null}
         </DragOverlay>
       </DndContext>
@@ -217,7 +232,7 @@ function DraggablePlayer({
   teamId: string;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
-    id: player.userId,
+    id: player.id,
     data: { fromTeamId: teamId },
   });
   return (
@@ -232,7 +247,20 @@ function DraggablePlayer({
         isDragging && "opacity-40",
       )}
     >
-      <PlayerPill name={player.name} image={player.image} />
+      <PlayerPill
+        name={player.name}
+        image={player.image}
+        trailing={player.isGuest ? <GuestTag /> : undefined}
+      />
     </div>
+  );
+}
+
+/** Small "+1" badge marking a guest slot. */
+function GuestTag() {
+  return (
+    <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+      +1
+    </span>
   );
 }

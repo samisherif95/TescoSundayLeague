@@ -35,6 +35,7 @@ export async function confirmBooking(formData: FormData) {
         where: { status: SignupStatus.CONFIRMED },
         include: { user: { select: { id: true, name: true } } },
       },
+      guests: { select: { hostUserId: true } },
     },
   });
   if (!game) return { error: "Game not found" };
@@ -49,18 +50,23 @@ export async function confirmBooking(formData: FormData) {
   }
 
   const totalPence = Math.round(parsed.data.totalPounds * 100);
-  const { perPersonPence } = calcSplit(totalPence, game.signups.length);
+  // Split across every head on the pitch — members + guests — then bill each
+  // host for their own share plus a share for each +1 they brought.
+  const guestCountByHost = new Map<string, number>();
+  for (const g of game.guests) {
+    guestCountByHost.set(
+      g.hostUserId,
+      (guestCountByHost.get(g.hostUserId) ?? 0) + 1,
+    );
+  }
+  const headCount = game.signups.length + game.guests.length;
+  const { perPersonPence } = calcSplit(totalPence, headCount);
   const desc = monzoDescription(game.kickoffAt);
 
-  // Everyone except the booker owes a share.
+  // Everyone except the booker owes a share (the booker keeps the remainder and
+  // covers any +1s they personally brought).
   const debtors = game.signups.filter((s) => s.userId !== user.id);
   const debtorIds = debtors.map((s) => s.userId);
-  const paymentLink = generatePaymentLink(
-    user.paymentMethod,
-    user.paymentHandle!,
-    perPersonPence,
-    desc,
-  );
 
   await prisma.$transaction(async (tx) => {
     await tx.game.update({
@@ -74,16 +80,25 @@ export async function confirmBooking(formData: FormData) {
       where: { gameId: game.id, debtorId: { notIn: debtorIds } },
     });
     for (const s of debtors) {
+      // 1 share for themselves + 1 per +1 they brought.
+      const shares = 1 + (guestCountByHost.get(s.userId) ?? 0);
+      const amountPence = perPersonPence * shares;
+      const paymentLink = generatePaymentLink(
+        user.paymentMethod,
+        user.paymentHandle!,
+        amountPence,
+        desc,
+      );
       await tx.paymentRequest.upsert({
         where: { gameId_debtorId: { gameId: game.id, debtorId: s.userId } },
         create: {
           gameId: game.id,
           debtorId: s.userId,
           bookerId: user.id,
-          amountPence: perPersonPence,
+          amountPence,
           paymentLink,
         },
-        update: { bookerId: user.id, amountPence: perPersonPence, paymentLink },
+        update: { bookerId: user.id, amountPence, paymentLink },
       });
     }
   });

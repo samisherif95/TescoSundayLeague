@@ -76,7 +76,10 @@ export default async function HomePage() {
   const mySignup = game.signups.find((s) => s.userId === user.id);
   const meta = STATUS_META[game.status];
   const positions = countPositions(confirmed);
-  const needed = Math.max(0, MIN_PLAYERS - confirmed.length);
+  // +1 guests are bodies on the pitch too, so they count toward the roster
+  // (and how many more we still need to lock).
+  const rosterCount = confirmed.length + game.guests.length;
+  const needed = Math.max(0, MIN_PLAYERS - rosterCount);
 
   // For an OPEN game, signups can be closed by the clock before the cron has
   // flipped the status — reflect that honestly instead of the static copy.
@@ -139,8 +142,12 @@ export default async function HomePage() {
             <div className="mt-6 grid grid-cols-3 gap-3 text-center">
               <Stat
                 label="Confirmed"
-                value={`${confirmed.length}`}
-                sub={`/ ${MAX_PLAYERS}`}
+                value={`${rosterCount}`}
+                sub={
+                  game.guests.length > 0
+                    ? `/ ${MAX_PLAYERS} · incl. ${game.guests.length} +1`
+                    : `/ ${MAX_PLAYERS}`
+                }
               />
               <Stat label="Waitlist" value={`${waitlist.length}`} />
               <Stat
@@ -152,7 +159,7 @@ export default async function HomePage() {
             </div>
 
             <Progress
-              current={confirmed.length}
+              current={rosterCount}
               min={MIN_PLAYERS}
               max={MAX_PLAYERS}
             />

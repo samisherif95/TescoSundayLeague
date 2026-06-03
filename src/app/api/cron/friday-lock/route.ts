@@ -30,6 +30,7 @@ export async function GET(req: Request) {
           user: { select: { email: true } },
         },
       },
+      guests: { select: { id: true } },
     },
   });
 
@@ -42,7 +43,10 @@ export async function GET(req: Request) {
 
   for (const game of upcoming) {
     const confirmed = game.signups;
-    if (confirmed.length < MIN_PLAYERS) {
+    // +1 guests count toward the minimum — that's the whole point of enabling
+    // them on a thin week.
+    const rosterCount = confirmed.length + game.guests.length;
+    if (rosterCount < MIN_PLAYERS) {
       await prisma.game.update({
         where: { id: game.id },
         data: { status: GameStatus.CANCELLED },
@@ -56,7 +60,7 @@ export async function GET(req: Request) {
             sendEmail({
               to: email,
               subject: "Sunday football cancelled — not enough players",
-              html: `<p>Heads up — only ${confirmed.length}/${MIN_PLAYERS} signed up, so this Sunday's game is cancelled.</p>
+              html: `<p>Heads up — only ${rosterCount}/${MIN_PLAYERS} signed up, so this Sunday's game is cancelled.</p>
                 <p>No worries — a fresh game is already open for next Sunday. Sign up early and rope a mate in.</p>`,
             }),
           ),
