@@ -5,6 +5,7 @@ import {
   SignupStatus,
 } from "@/generated/prisma/enums";
 import {
+  GUEST_SKILL_SCORE,
   MAX_PLAYERS,
   MIN_PLAYERS,
   generateTeams,
@@ -44,26 +45,35 @@ async function serializableTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   }
 }
 
-/** Wipe and re-create a game's teams from its current CONFIRMED signups. */
+/** Wipe and re-create a game's teams from its current CONFIRMED signups + guests. */
 async function regenerateTeams(tx: Tx, gameId: string) {
   const confirmed = await tx.signup.findMany({
     where: { gameId, status: SignupStatus.CONFIRMED },
     include: { user: { select: { id: true, skillScore: true } } },
   });
-  const teams = generateTeams(
-    confirmed.map((s) => ({
+  const guests = await tx.guest.findMany({
+    where: { gameId },
+    select: { id: true },
+  });
+  const teams = generateTeams([
+    ...confirmed.map((s) => ({
       userId: s.userId,
       position: s.position,
       skillScore: s.user.skillScore,
     })),
-  );
+    ...guests.map((g) => ({ guestId: g.id, skillScore: GUEST_SKILL_SCORE })),
+  ]);
   await tx.team.deleteMany({ where: { gameId } });
   for (const t of teams) {
     await tx.team.create({
       data: {
         gameId,
         label: t.label,
-        players: { create: t.players.map((p) => ({ userId: p.userId })) },
+        players: {
+          create: t.players.map((p) =>
+            p.userId ? { userId: p.userId } : { guestId: p.guestId },
+          ),
+        },
       },
     });
   }
@@ -246,6 +256,9 @@ export async function leaveGame(
       where: { id: signup.id },
       data: { status: SignupStatus.DROPPED_OUT, waitlistPosition: null },
     });
+    // A dropping member takes their +1s with them — a guest with no host present
+    // makes no sense, and they shouldn't keep propping up the head count.
+    await tx.guest.deleteMany({ where: { gameId, hostUserId: userId } });
 
     let promotedUserId: string | null = null;
     if (wasConfirmed) {
@@ -286,7 +299,10 @@ export async function leaveGame(
         where: { gameId, status: SignupStatus.CONFIRMED },
         select: { userId: true, user: { select: { email: true } } },
       });
-      if (confirmed.length >= MIN_PLAYERS) {
+      const guestCount = await tx.guest.count({ where: { gameId } });
+      // Guests still count toward the roster, so a game stays locked as long as
+      // members + guests clear the minimum.
+      if (confirmed.length + guestCount >= MIN_PLAYERS) {
         const stillIn = new Set(confirmed.map((s) => s.userId));
         const dutyPlayers = confirmed.map((s) => ({
           id: s.userId,

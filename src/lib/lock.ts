@@ -1,10 +1,12 @@
 import { prisma } from "@/lib/db";
 import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
 import {
+  GUEST_SKILL_SCORE,
   MIN_PLAYERS,
   generateTeams,
   pickBooker,
   type BookerCandidate,
+  type DraftablePlayer,
 } from "@/lib/game";
 import { sendEmail } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
@@ -52,6 +54,7 @@ export async function lockGame(gameId: string): Promise<LockResult> {
           },
         },
       },
+      guests: { select: { id: true } },
     },
   });
 
@@ -61,10 +64,13 @@ export async function lockGame(gameId: string): Promise<LockResult> {
   }
 
   const confirmed = game.signups;
-  if (confirmed.length < MIN_PLAYERS) {
+  // Guests (+1s) are bodies on the pitch, so they count toward the minimum and
+  // fill out the teams — even though they never do duties or get billed direct.
+  const rosterCount = confirmed.length + game.guests.length;
+  if (rosterCount < MIN_PLAYERS) {
     return {
       ok: false,
-      error: `Need at least ${MIN_PLAYERS} confirmed players to lock (have ${confirmed.length}).`,
+      error: `Need at least ${MIN_PLAYERS} players to lock (have ${rosterCount}).`,
     };
   }
 
@@ -101,12 +107,19 @@ export async function lockGame(gameId: string): Promise<LockResult> {
     bookerId,
   );
 
-  // Lock + pick booker + generate teams in a single transaction.
-  const draftable = confirmed.map((s) => ({
-    userId: s.user.id,
-    position: s.position,
-    skillScore: s.user.skillScore,
-  }));
+  // Lock + pick booker + generate teams in a single transaction. Members carry
+  // their real skill; guests slot in at the neutral default.
+  const draftable: DraftablePlayer[] = [
+    ...confirmed.map((s) => ({
+      userId: s.user.id,
+      position: s.position,
+      skillScore: s.user.skillScore,
+    })),
+    ...game.guests.map((g) => ({
+      guestId: g.id,
+      skillScore: GUEST_SKILL_SCORE,
+    })),
+  ];
   const teams = generateTeams(draftable);
 
   await prisma.$transaction(async (tx) => {
@@ -127,7 +140,9 @@ export async function lockGame(gameId: string): Promise<LockResult> {
           gameId: game.id,
           label: t.label,
           players: {
-            create: t.players.map((p) => ({ userId: p.userId })),
+            create: t.players.map((p) =>
+              p.userId ? { userId: p.userId } : { guestId: p.guestId },
+            ),
           },
         },
       });

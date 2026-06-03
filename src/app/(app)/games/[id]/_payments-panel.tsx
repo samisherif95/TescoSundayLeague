@@ -14,6 +14,8 @@ export type PaymentRow = {
   amountPence: number;
   paymentLink: string;
   paid: boolean;
+  /** How many +1s this person brought — their share covers them too. */
+  guestCount: number;
 };
 
 export function PaymentsPanel({
@@ -69,6 +71,11 @@ export function PaymentsPanel({
               </div>
               <div className="text-muted-foreground">
                 £{(p.amountPence / 100).toFixed(2)}
+                {p.guestCount > 0 && (
+                  <span className="ml-1">
+                    (incl. {p.guestCount} +1{p.guestCount > 1 ? "s" : ""})
+                  </span>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-2">

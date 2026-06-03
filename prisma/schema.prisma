@@ -127,6 +127,7 @@ model User {
   accounts          Account[]
   sessions          Session[]
   signups           Signup[]
+  guestsBrought     Guest[]            @relation("GuestHost")
   teamMemberships   TeamPlayer[]
   ratingsGiven      Rating[]           @relation("RatingsGiven")
   ratingsReceived   Rating[]           @relation("RatingsReceived")
@@ -145,6 +146,9 @@ model Game {
   pitchName       String     @default("Ladbroke Grove")
   pitchBookingUrl String     @default("https://hireapitch.com/ladbroke-grove")
   status          GameStatus @default(OPEN)
+  // When an admin flips this on (a week they fear missing the minimum), any
+  // confirmed player can add one or more outside "+1" guests to make numbers.
+  allowGuests     Boolean    @default(false)
   bookerId        String?
   bibsUserId      String?
   footballUserId  String?
@@ -156,6 +160,7 @@ model Game {
   bibsBringer     User?            @relation("Bibs", fields: [bibsUserId], references: [id])
   footballBringer User?            @relation("Football", fields: [footballUserId], references: [id])
   signups         Signup[]
+  guests          Guest[]
   teams           Team[]
   matches         Match[]
   ratings         Rating[]
@@ -202,15 +207,44 @@ model Team {
   @@unique([gameId, label])
 }
 
+// A slot in a team. It holds EITHER a member (`userId`) or a guest (`guestId`)
+// — exactly one is set (enforced in code). The surrogate `id` replaces the old
+// composite (teamId, userId) primary key, which couldn't accommodate a nullable
+// userId for guest slots.
 model TeamPlayer {
-  teamId String
-  userId String
+  id      String  @id @default(cuid())
+  teamId  String
+  userId  String?
+  guestId String?
 
-  team Team @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  team  Team   @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user  User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  guest Guest? @relation(fields: [guestId], references: [id], onDelete: Cascade)
 
-  @@id([teamId, userId])
+  @@unique([teamId, userId])
+  @@unique([teamId, guestId])
   @@index([userId])
+  @@index([guestId])
+}
+
+// A "+1" — a non-member guest brought along by a confirmed player (the host)
+// to help fill out the numbers. Guests have no account, so they can't log in,
+// rate, be rated, or be picked for booker/bibs/football (all of which only ever
+// read `User`). They DO count toward the roster + teams, and their share of the
+// pitch cost is billed to their host. Displayed everywhere as "<host> +1".
+model Guest {
+  id         String   @id @default(cuid())
+  gameId     String
+  hostUserId String
+  createdAt  DateTime @default(now())
+
+  game Game @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  host User @relation("GuestHost", fields: [hostUserId], references: [id], onDelete: Cascade)
+
+  teamMemberships TeamPlayer[]
+
+  @@index([gameId])
+  @@index([hostUserId])
 }
 
 // IMPORTANT: raterId is NEVER returned in any API response.

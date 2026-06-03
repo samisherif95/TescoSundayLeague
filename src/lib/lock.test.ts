@@ -29,7 +29,11 @@ type SignupSeed = {
   skill?: number;
 };
 
-function gameWith(signups: SignupSeed[], status: GameStatus = GameStatus.OPEN) {
+function gameWith(
+  signups: SignupSeed[],
+  status: GameStatus = GameStatus.OPEN,
+  guestCount = 0,
+) {
   return {
     id: "game1",
     status,
@@ -43,6 +47,7 @@ function gameWith(signups: SignupSeed[], status: GameStatus = GameStatus.OPEN) {
         skillScore: s.skill ?? 3,
       },
     })),
+    guests: Array.from({ length: guestCount }, (_, i) => ({ id: `guest${i}` })),
   };
 }
 
@@ -117,6 +122,32 @@ describe("lockGame happy path", () => {
     // Everyone got notified (booker email + the rest), and pushes fired.
     expect(sendEmail).toHaveBeenCalled();
     expect(sendPushToUsers).toHaveBeenCalled();
+  });
+
+  it("counts +1 guests toward the minimum and slots them into teams", async () => {
+    // 8 members + 2 guests = 10 bodies → locks into two teams.
+    db.game.findUnique.mockResolvedValue(
+      gameWith(confirmed(8), GameStatus.OPEN, 2),
+    );
+    const r = await lockGame("game1");
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.teamCount).toBe(2);
+    // Both team-create calls together hold all 10 slots, including guest slots.
+    const created = db.team.create.mock.calls.flatMap(
+      (c) => c[0].data.players.create as Array<{ userId?: string; guestId?: string }>,
+    );
+    expect(created).toHaveLength(10);
+    expect(created.filter((p) => p.guestId)).toHaveLength(2);
+  });
+
+  it("still refuses to lock when members + guests fall short", async () => {
+    db.game.findUnique.mockResolvedValue(
+      gameWith(confirmed(8), GameStatus.OPEN, 1),
+    );
+    const r = await lockGame("game1");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toMatch(/at least 10/i);
   });
 
   it("creates a third team C for 13 players", async () => {

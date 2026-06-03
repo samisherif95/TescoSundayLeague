@@ -7,22 +7,22 @@ import { authorizeAdmin } from "@/lib/booking-access";
 
 const moveSchema = z.object({
   gameId: z.string().min(1),
-  userId: z.string().min(1),
+  teamPlayerId: z.string().min(1),
   toTeamId: z.string().min(1),
 });
 
 /**
- * Move a player into a different team within the same game (drag-and-drop on
- * the game page). Admin-only — keeping the balanced lineup under one person's
- * control avoids tug-of-war shuffling. A player belongs to exactly one team, so
- * this removes them from their current team and adds them to the target.
+ * Move a player (member or +1 guest) into a different team within the same game
+ * (drag-and-drop on the game page). Admin-only — keeping the balanced lineup
+ * under one person's control avoids tug-of-war shuffling. Identified by the team
+ * slot's id, so it works the same for members and guests.
  */
 export async function moveTeamPlayerAction(
   input: z.infer<typeof moveSchema>,
 ): Promise<{ ok: true } | { error: string }> {
   const parsed = moveSchema.safeParse(input);
   if (!parsed.success) return { error: "Invalid input" };
-  const { gameId, userId, toTeamId } = parsed.data;
+  const { gameId, teamPlayerId, toTeamId } = parsed.data;
 
   const auth = await authorizeAdmin();
   if ("error" in auth) return auth;
@@ -33,17 +33,17 @@ export async function moveTeamPlayerAction(
   });
   if (!toTeam) return { error: "That team isn't in this game" };
 
-  const current = await prisma.teamPlayer.findFirst({
-    where: { userId, team: { gameId } },
-    select: { teamId: true },
+  const slot = await prisma.teamPlayer.findFirst({
+    where: { id: teamPlayerId, team: { gameId } },
+    select: { id: true, teamId: true },
   });
-  if (!current) return { error: "That player isn't in this game's teams" };
-  if (current.teamId === toTeamId) return { ok: true };
+  if (!slot) return { error: "That player isn't in this game's teams" };
+  if (slot.teamId === toTeamId) return { ok: true };
 
-  await prisma.$transaction([
-    prisma.teamPlayer.deleteMany({ where: { userId, team: { gameId } } }),
-    prisma.teamPlayer.create({ data: { teamId: toTeamId, userId } }),
-  ]);
+  await prisma.teamPlayer.update({
+    where: { id: slot.id },
+    data: { teamId: toTeamId },
+  });
 
   revalidatePath(`/games/${gameId}`);
   revalidatePath("/");
