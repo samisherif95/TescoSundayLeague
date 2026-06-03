@@ -146,7 +146,7 @@ export default async function HomePage() {
               <Stat
                 label={needed > 0 ? "Need" : "Status"}
                 value={needed > 0 ? `${needed}` : "Ready"}
-                sub={needed > 0 ? "more" : "to lock"}
+                sub={needed > 0 ? "more" : undefined}
                 accent={needed === 0}
               />
             </div>
