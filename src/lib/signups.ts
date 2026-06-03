@@ -149,8 +149,12 @@ export async function joinGame(
     const confirmedCount = await tx.signup.count({
       where: { gameId, status: SignupStatus.CONFIRMED },
     });
+    // +1 guests occupy roster slots too, so they count toward the cap. This
+    // keeps the squad at MAX_PLAYERS total and sends a late member to the
+    // waitlist rather than ever bumping a guest who's already in.
+    const guestCount = await tx.guest.count({ where: { gameId } });
 
-    if (confirmedCount < MAX_PLAYERS) {
+    if (confirmedCount + guestCount < MAX_PLAYERS) {
       if (existing) {
         await tx.signup.update({
           where: { id: existing.id },
