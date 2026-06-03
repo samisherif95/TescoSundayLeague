@@ -206,7 +206,11 @@ function Stat({
         >
           {value}
         </span>
-        {sub && <span className="text-xs text-muted-foreground">{sub}</span>}
+        {sub && (
+          <span className="whitespace-nowrap text-xs text-muted-foreground">
+            {sub}
+          </span>
+        )}
       </div>
     </div>
   );
