@@ -95,11 +95,17 @@ function DutyRow({
   const [pending, start] = useTransition();
   const [current, setCurrent] = useState<string | null>(value);
   const takenSet = new Set(taken);
+  // Map each id → display name so the trigger shows the player's name rather
+  // than the raw user id (Base UI's Select.Value renders the value otherwise).
+  const items = Object.fromEntries(
+    players.map((p) => [p.id, p.name ?? "Unknown"]),
+  );
 
   return (
     <div className="flex items-center gap-3">
       <span className="w-24 shrink-0 text-sm font-medium">{label}</span>
       <Select
+        items={items}
         value={current ?? undefined}
         disabled={pending}
         onValueChange={(next) => {
