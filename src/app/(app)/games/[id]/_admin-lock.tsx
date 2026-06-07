@@ -9,9 +9,9 @@ import { Card, CardContent } from "@/components/ui/card";
 import { lockGameAction } from "@/app/(app)/admin/actions";
 
 /**
- * Admin-only safeguard shown on an OPEN game. Runs the exact same job as the
- * Friday cron (booker selection + duties + balanced teams + notifications) on
- * demand, so a missed/late cron never blocks the weekend.
+ * Admin-only control shown on an OPEN game. Runs booker selection + duties +
+ * balanced teams + notifications on demand. This is how the weekly lineup gets
+ * locked in (do it once signups have settled, before the weekend).
  */
 export function AdminLockCard({
   gameId,
@@ -35,8 +35,7 @@ export function AdminLockCard({
         </div>
         <p className="text-sm text-muted-foreground">
           Picks the booker, assigns bibs &amp; football, generates balanced
-          teams, and notifies everyone — the same job the Friday cron runs. Use
-          it as a backup if the cron is late.
+          teams, and notifies everyone. Do this once signups have settled.
         </p>
         <Button
           className="min-h-11 w-full sm:w-auto"

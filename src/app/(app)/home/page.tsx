@@ -362,7 +362,8 @@ function EmptyState({ isAdmin }: { isAdmin: boolean }) {
         No game yet this week
       </h2>
       <p className="mt-2 text-sm text-muted-foreground">
-        A new game is auto-created every Monday at 09:00.
+        A new game is auto-generated at a random point through the week — keep
+        an eye out.
       </p>
       {isAdmin && (
         <Button asChild className="mt-6">
