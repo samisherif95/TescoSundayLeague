@@ -15,7 +15,7 @@ export function AdminControls({ hasOpen }: { hasOpen: boolean }) {
         <div>
           <p className="font-medium">Create next Sunday&apos;s game</p>
           <p className="text-sm text-muted-foreground">
-            Same as the Monday cron — useful for testing or one-offs.
+            Opens signups for next Sunday. Do this at the start of the week.
           </p>
         </div>
         <Button

@@ -1,9 +1,8 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
-import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
+import { GameStatus } from "@/generated/prisma/enums";
 import { assertCronAuth } from "@/lib/cron";
-import { sendEmail } from "@/lib/email";
-import { env } from "@/lib/env";
+import { completeGame } from "@/lib/complete";
 
 export const dynamic = "force-dynamic";
 
@@ -24,37 +23,13 @@ export async function GET(req: Request) {
       status: { in: [GameStatus.BOOKED, GameStatus.LOCKED] },
       kickoffAt: { lte: now },
     },
-    include: {
-      signups: {
-        where: { status: SignupStatus.CONFIRMED },
-        include: { user: { select: { email: true, name: true } } },
-      },
-    },
+    select: { id: true },
   });
 
-  if (justFinished.length > 0) {
-    await prisma.game.updateMany({
-      where: { id: { in: justFinished.map((g) => g.id) } },
-      data: { status: GameStatus.COMPLETED },
-    });
-  }
-
+  // Delegate each to the shared completer so the cron and the admin "End game
+  // now" button can never drift apart (status flip + rating emails).
   for (const game of justFinished) {
-    await Promise.allSettled(
-      game.signups
-        .map((s) => ({ email: s.user.email, name: s.user.name }))
-        .filter((p): p is { email: string; name: string | null } =>
-          Boolean(p.email),
-        )
-        .map((p) =>
-          sendEmail({
-            to: p.email,
-            subject: "Rate your teammates",
-            html: `<p>Hi ${p.name ?? "there"},</p>
-              <p>Hope the game was good. <a href="${env.appUrl}/games/${game.id}/rate">Rate your teammates</a> (1–5, anonymous, optional) — feeds into next week's team balancing.</p>`,
-          }),
-        ),
-    );
+    await completeGame(game.id);
   }
 
   return NextResponse.json({ completed: justFinished.length });

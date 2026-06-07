@@ -115,7 +115,7 @@ const FEATURES = [
   {
     icon: CalendarClock,
     title: "Auto-created weekly",
-    body: "Every Monday morning a new game opens for the upcoming Sunday. One email to the squad, signups close Friday at 6pm.",
+    body: "A new game is auto-generated at a random point through the week for the upcoming Sunday. One email to the squad, and signups are open until the lineup's locked.",
   },
   {
     icon: Dice5,

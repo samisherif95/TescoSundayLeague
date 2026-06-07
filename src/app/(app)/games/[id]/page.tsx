@@ -24,6 +24,9 @@ import { MatchDay } from "./_match-day";
 import { TeamsEditor } from "./_teams-editor";
 import { GameDetailsLine } from "./_details-editor";
 import { AdminLockCard } from "./_admin-lock";
+import { AdminEndCard } from "./_admin-end";
+import { AdminCancelCard } from "./_admin-cancel";
+import { DutiesEditor } from "./_duties-editor";
 import {
   AddGuestButton,
   AllowGuestsToggle,
@@ -197,6 +200,34 @@ export default async function GameDetailPage({
           )}
         </div>
       </section>
+
+      {user.isAdmin &&
+        (game.status === GameStatus.LOCKED ||
+          game.status === GameStatus.BOOKED) && (
+          <DutiesEditor
+            gameId={game.id}
+            players={confirmed.map((s) => ({
+              id: s.user.id,
+              name: s.user.name,
+            }))}
+            bookerId={game.bookerId}
+            bibsUserId={game.bibsBringer?.id ?? null}
+            footballUserId={game.footballBringer?.id ?? null}
+          />
+        )}
+
+      {user.isAdmin &&
+        (game.status === GameStatus.LOCKED ||
+          game.status === GameStatus.BOOKED) && (
+          <AdminEndCard gameId={game.id} />
+        )}
+
+      {user.isAdmin &&
+        (game.status === GameStatus.OPEN ||
+          game.status === GameStatus.LOCKED ||
+          game.status === GameStatus.BOOKED) && (
+          <AdminCancelCard gameId={game.id} />
+        )}
 
       {game.status === GameStatus.OPEN && signupsOpen && (
         <SignupControls
