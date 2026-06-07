@@ -95,17 +95,15 @@ function DutyRow({
   const [pending, start] = useTransition();
   const [current, setCurrent] = useState<string | null>(value);
   const takenSet = new Set(taken);
-  // Map each id → display name so the trigger shows the player's name rather
-  // than the raw user id (Base UI's Select.Value renders the value otherwise).
-  const items = Object.fromEntries(
-    players.map((p) => [p.id, p.name ?? "Unknown"]),
-  );
+  // Look up a player's name by id — used to format the trigger label, since
+  // Base UI's Select.Value renders the raw value (the user id) otherwise.
+  const nameById = (id: string | null) =>
+    players.find((p) => p.id === id)?.name ?? "Unknown";
 
   return (
     <div className="flex items-center gap-3">
       <span className="w-24 shrink-0 text-sm font-medium">{label}</span>
       <Select
-        items={items}
         value={current ?? undefined}
         disabled={pending}
         onValueChange={(next) => {
@@ -125,7 +123,9 @@ function DutyRow({
         }}
       >
         <SelectTrigger className="flex-1">
-          <SelectValue placeholder="Unassigned" />
+          <SelectValue placeholder="Unassigned">
+            {(val: string | null) => (val ? nameById(val) : "Unassigned")}
+          </SelectValue>
         </SelectTrigger>
         <SelectContent>
           {players.map((p) => (
