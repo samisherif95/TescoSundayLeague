@@ -3,17 +3,10 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import {
-  GameStatus,
-  SignupStatus,
-} from "@/generated/prisma/enums";
+import { GameStatus } from "@/generated/prisma/enums";
 import { requireOnboardedUser } from "@/lib/session";
 import { sendPushToUsers } from "@/lib/push";
-import {
-  calcSplit,
-  generatePaymentLink,
-  monzoDescription,
-} from "@/lib/game";
+import { setBilledMembers, generatePaymentRequests } from "@/lib/payments";
 
 const confirmSchema = z.object({
   gameId: z.string().min(1),
@@ -30,19 +23,26 @@ export async function confirmBooking(formData: FormData) {
 
   const game = await prisma.game.findUnique({
     where: { id: parsed.data.gameId },
-    include: {
-      signups: {
-        where: { status: SignupStatus.CONFIRMED },
-        include: { user: { select: { id: true, name: true } } },
-      },
-      guests: { select: { hostUserId: true } },
+    select: {
+      id: true,
+      bookerId: true,
+      status: true,
+      paymentRequests: { select: { debtorId: true } },
     },
   });
   if (!game) return { error: "Game not found" };
   if (game.bookerId !== user.id) return { error: "Only the booker can do this" };
-  if (game.status !== GameStatus.LOCKED && game.status !== GameStatus.BOOKED) {
+  // Editable while the booking's being sorted, and also after the game's ended
+  // (so a forgotten or wrong cost can still be entered/fixed).
+  if (
+    game.status !== GameStatus.LOCKED &&
+    game.status !== GameStatus.BOOKED &&
+    game.status !== GameStatus.COMPLETED
+  ) {
     return { error: "Game is not ready to be booked" };
   }
+  // The split is generated when an admin ends the game, but the booker needs a
+  // payment username on file by then — make them set it now rather than later.
   if (!user.paymentHandle) {
     return {
       error: `Add your ${user.paymentMethod === "REVOLUT" ? "Revolut" : "Monzo"} username in your profile first`,
@@ -50,58 +50,31 @@ export async function confirmBooking(formData: FormData) {
   }
 
   const totalPence = Math.round(parsed.data.totalPounds * 100);
-  // Split across every head on the pitch — members + guests — then bill each
-  // host for their own share plus a share for each +1 they brought.
-  const guestCountByHost = new Map<string, number>();
-  for (const g of game.guests) {
-    guestCountByHost.set(
-      g.hostUserId,
-      (guestCountByHost.get(g.hostUserId) ?? 0) + 1,
-    );
-  }
-  const headCount = game.signups.length + game.guests.length;
-  const { perPersonPence } = calcSplit(totalPence, headCount);
-  const desc = monzoDescription(game.kickoffAt);
 
-  // Everyone except the booker owes a share (the booker keeps the remainder and
-  // covers any +1s they personally brought).
-  const debtors = game.signups.filter((s) => s.userId !== user.id);
-  const debtorIds = debtors.map((s) => s.userId);
-
-  await prisma.$transaction(async (tx) => {
-    await tx.game.update({
+  if (game.status === GameStatus.COMPLETED) {
+    // Game's already ended — record the cost and (re)generate the split now,
+    // keeping it COMPLETED. Rebill whoever's currently billed so this doesn't
+    // resurrect no-shows an admin already removed; if nothing's billed yet
+    // (cost entered after an early end), fall back to the full confirmed squad.
+    await prisma.game.update({
+      where: { id: game.id },
+      data: { totalCostPence: totalPence },
+    });
+    const existing = game.paymentRequests.map((p) => p.debtorId);
+    const result =
+      existing.length > 0
+        ? await setBilledMembers(game.id, [game.bookerId, ...existing])
+        : await generatePaymentRequests(game.id);
+    if (!result.ok) return { error: result.error };
+  } else {
+    // Record the cost only. Payment links aren't generated or shown to the
+    // squad until an admin ends the game — that's when the attendee list is
+    // final and any no-shows have been removed, so the split is correct.
+    await prisma.game.update({
       where: { id: game.id },
       data: { status: GameStatus.BOOKED, totalCostPence: totalPence },
     });
-    // Drop requests for anyone no longer confirmed (e.g. dropped out before
-    // re-entry). Upsert the rest so re-entering the total to fix it preserves
-    // who's already marked themselves paid — we only refresh amount + link.
-    await tx.paymentRequest.deleteMany({
-      where: { gameId: game.id, debtorId: { notIn: debtorIds } },
-    });
-    for (const s of debtors) {
-      // 1 share for themselves + 1 per +1 they brought.
-      const shares = 1 + (guestCountByHost.get(s.userId) ?? 0);
-      const amountPence = perPersonPence * shares;
-      const paymentLink = generatePaymentLink(
-        user.paymentMethod,
-        user.paymentHandle!,
-        amountPence,
-        desc,
-      );
-      await tx.paymentRequest.upsert({
-        where: { gameId_debtorId: { gameId: game.id, debtorId: s.userId } },
-        create: {
-          gameId: game.id,
-          debtorId: s.userId,
-          bookerId: user.id,
-          amountPence,
-          paymentLink,
-        },
-        update: { bookerId: user.id, amountPence, paymentLink },
-      });
-    }
-  });
+  }
 
   revalidatePath(`/games/${game.id}`);
   revalidatePath(`/games/${game.id}/book`);

@@ -25,8 +25,10 @@ export function AdminEndCard({ gameId }: { gameId: string }) {
           <p className="font-semibold">Admin · end this game</p>
         </div>
         <p className="text-sm text-muted-foreground">
-          Marks the game finished and emails everyone the link to rate their
-          teammates. Do this once the match has been played.
+          Marks the game finished, generates the payment split from the booker&apos;s
+          recorded cost, and emails everyone the link to rate their teammates. Do
+          this once the match has been played — you can drop any no-shows from the
+          split afterwards.
         </p>
         <Button
           className="min-h-11 w-full sm:w-auto"

@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
 import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
 import { sendEmail } from "@/lib/email";
+import { generatePaymentRequests } from "@/lib/payments";
 import { env } from "@/lib/env";
 
 export type CompleteResult =
@@ -45,6 +46,11 @@ export async function completeGame(gameId: string): Promise<CompleteResult> {
     where: { id: game.id },
     data: { status: GameStatus.COMPLETED },
   });
+
+  // Now that the squad's final (no-shows can still be removed afterwards),
+  // generate the payment split and reveal it. Best-effort — a missing cost or
+  // booker handle leaves the panel empty rather than blocking completion.
+  await generatePaymentRequests(game.id).catch(() => undefined);
 
   await notifyCompleted(game.id, game.signups);
 

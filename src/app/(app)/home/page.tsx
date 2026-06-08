@@ -38,12 +38,12 @@ const STATUS_META: Record<
   BOOKED: {
     label: "Pitch booked",
     tone: "border-sky-500/30 bg-sky-500/10 text-sky-700 dark:text-sky-300",
-    helper: "Pay the booker via the Monzo links below.",
+    helper: "Payment links go out once the game's marked done.",
   },
   COMPLETED: {
     label: "Completed",
     tone: "border-muted text-muted-foreground bg-muted/50",
-    helper: "Rate your teammates within 48 hours.",
+    helper: "Pay the booker via the links below, and rate your teammates.",
   },
   CANCELLED: {
     label: "Cancelled",

@@ -11,6 +11,12 @@ const { db, requireAdmin, sendEmail } = vi.hoisted(() => ({
 vi.mock("@/lib/db", () => ({ prisma: db }));
 vi.mock("@/lib/session", () => ({ requireAdmin }));
 vi.mock("@/lib/email", () => ({ sendEmail }));
+// completeGame generates the payment split on completion — stubbed here so the
+// status + rating-email behaviour is tested in isolation (split maths lives in
+// payments.test.ts).
+vi.mock("@/lib/payments", () => ({
+  generatePaymentRequests: vi.fn(async () => ({ ok: true })),
+}));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
 import { endGameAction } from "@/app/(app)/admin/actions";

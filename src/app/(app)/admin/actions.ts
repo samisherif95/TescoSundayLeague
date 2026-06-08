@@ -9,6 +9,7 @@ import { nextSundayNoon } from "@/lib/game";
 import { lockGame } from "@/lib/lock";
 import { completeGame } from "@/lib/complete";
 import { cancelGame } from "@/lib/cancel";
+import { setBilledMembers, generatePaymentRequests } from "@/lib/payments";
 import { sendPushToUsers } from "@/lib/push";
 
 const editSchema = z.object({
@@ -112,6 +113,59 @@ export async function cancelGameAction(
   if (!result.ok) return { error: result.error };
   revalidatePath(`/games/${gameId}`);
   revalidatePath("/admin");
+  revalidatePath("/");
+  return { ok: true };
+}
+
+/**
+ * Admin: remove a no-show from the payment split. Drops their payment request
+ * and recomputes everyone else's share so the same total is covered by who
+ * actually played. Only touches money — the player stays in the roster/teams.
+ */
+export async function removeDebtorAction(
+  gameId: string,
+  debtorId: string,
+): Promise<{ ok: true } | { error: string }> {
+  await requireAdmin();
+  if (!gameId || !debtorId) return { error: "Missing game or player id" };
+
+  const game = await prisma.game.findUnique({
+    where: { id: gameId },
+    select: {
+      bookerId: true,
+      paymentRequests: { select: { debtorId: true } },
+    },
+  });
+  if (!game) return { error: "Game not found" };
+  if (debtorId === game.bookerId) {
+    return { error: "The booker isn't billed — there's nothing to remove." };
+  }
+
+  // Rebill everyone who still has a request, minus the removed player. The
+  // booker is re-added as a head inside setBilledMembers.
+  const remaining = game.paymentRequests
+    .map((p) => p.debtorId)
+    .filter((id) => id !== debtorId);
+  const result = await setBilledMembers(gameId, remaining);
+  if (!result.ok) return { error: result.error };
+
+  revalidatePath(`/games/${gameId}`);
+  revalidatePath("/");
+  return { ok: true };
+}
+
+/**
+ * Admin: rebuild the payment split from the full confirmed squad — the escape
+ * hatch for an accidental removal. Re-adds anyone dropped and recomputes shares.
+ */
+export async function regenerateSplitAction(
+  gameId: string,
+): Promise<{ ok: true } | { error: string }> {
+  await requireAdmin();
+  if (!gameId) return { error: "Missing game id" };
+  const result = await generatePaymentRequests(gameId);
+  if (!result.ok) return { error: result.error };
+  revalidatePath(`/games/${gameId}`);
   revalidatePath("/");
   return { ok: true };
 }
