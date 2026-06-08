@@ -100,12 +100,14 @@ function useNow(running: boolean, offsetMs: number): number {
 export function MatchDay({
   gameId,
   canRecord,
+  canStartMatch,
   teams,
   matches,
   serverNow,
 }: {
   gameId: string;
   canRecord: boolean;
+  canStartMatch: boolean;
   teams: MatchTeam[];
   matches: SerializedMatch[];
   serverNow: number;
@@ -140,12 +142,19 @@ export function MatchDay({
           canRecord={canRecord}
           clockOffset={clockOffset}
         />
-      ) : canRecord && teams.length >= 2 ? (
-        <NewMatch gameId={gameId} teams={teams} />
       ) : teams.length < 2 ? (
         <p className="text-sm text-muted-foreground">
           Teams need to be set before you can record matches.
         </p>
+      ) : !canStartMatch ? (
+        // Game's over — show the results history below, but no new matches.
+        history.length === 0 && (
+          <p className="text-sm text-muted-foreground">
+            No matches were recorded.
+          </p>
+        )
+      ) : canRecord ? (
+        <NewMatch gameId={gameId} teams={teams} />
       ) : (
         <p className="text-sm text-muted-foreground">
           No match in progress.

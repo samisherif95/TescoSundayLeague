@@ -21,6 +21,17 @@ import {
   signupDeadline,
 } from "@/lib/game";
 
+// Short word for the "Status" stat tile (the header badge carries the full
+// label). "Ready" means an OPEN game has enough players to lock — it must not
+// leak onto a game that's already locked/booked/done.
+const SHORT_STATUS: Record<GameStatus, string> = {
+  OPEN: "Ready",
+  LOCKED: "Locked",
+  BOOKED: "Booked",
+  COMPLETED: "Done",
+  CANCELLED: "Off",
+};
+
 const STATUS_META: Record<
   GameStatus,
   { label: string; tone: string; helper: string }
@@ -80,6 +91,9 @@ export default async function HomePage() {
   // (and how many more we still need to lock).
   const rosterCount = confirmed.length + game.guests.length;
   const needed = Math.max(0, MIN_PLAYERS - rosterCount);
+  // "Need X more" only applies while signups are still being filled (OPEN);
+  // once locked/booked/done the tile shows the status word instead.
+  const showNeed = game.status === GameStatus.OPEN && needed > 0;
 
   // For an OPEN game, signups can be closed by the clock before the cron has
   // flipped the status — reflect that honestly instead of the static copy.
@@ -151,10 +165,10 @@ export default async function HomePage() {
               />
               <Stat label="Waitlist" value={`${waitlist.length}`} />
               <Stat
-                label={needed > 0 ? "Need" : "Status"}
-                value={needed > 0 ? `${needed}` : "Ready"}
-                sub={needed > 0 ? "more" : undefined}
-                accent={needed === 0}
+                label={showNeed ? "Need" : "Status"}
+                value={showNeed ? `${needed}` : SHORT_STATUS[game.status]}
+                sub={showNeed ? "more" : undefined}
+                accent={!showNeed && game.status === GameStatus.OPEN}
               />
             </div>
 

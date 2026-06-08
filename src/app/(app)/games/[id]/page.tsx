@@ -94,6 +94,10 @@ export default async function GameDetailPage({
     game.teams.length >= 2 &&
     (game.status === GameStatus.BOOKED ||
       game.status === GameStatus.COMPLETED);
+  // New matches can only be kicked off during the live window (BOOKED). Once
+  // the game's ended the match section stays visible as a read-only results
+  // history — you can't start fresh matches against a finished game.
+  const canStartMatch = game.status === GameStatus.BOOKED;
 
   // Match recording only names real members as scorers — guests have no
   // account to attribute to (their goals are still counted for the team, just
@@ -398,6 +402,7 @@ export default async function GameDetailPage({
         <MatchDay
           gameId={game.id}
           canRecord={canRecord}
+          canStartMatch={canStartMatch}
           teams={matchTeams}
           matches={matchesData}
           // Per-request server time, so each device can correct for clock drift
