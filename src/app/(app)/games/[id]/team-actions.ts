@@ -24,7 +24,7 @@ export async function moveTeamPlayerAction(
   if (!parsed.success) return { error: "Invalid input" };
   const { gameId, teamPlayerId, toTeamId } = parsed.data;
 
-  const auth = await authorizeAdmin();
+  const auth = await authorizeAdmin(gameId);
   if ("error" in auth) return auth;
 
   const toTeam = await prisma.team.findFirst({

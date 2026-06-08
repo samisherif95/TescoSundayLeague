@@ -192,36 +192,66 @@ export function monzoDescription(kickoff: Date): string {
   return `Football ${day}-${months[kickoff.getUTCMonth()]}`;
 }
 
+export const LONDON_TZ = "Europe/London";
+
 /**
- * Next Sunday at 12:00 **Europe/London** wall-clock time, returned as a UTC Date.
- * Used to seed kickoffAt when the Monday cron creates the week's game.
- *
- * Computed via London parts + {@link londonWallTimeToUtc} (not `setHours`) so the
- * kickoff is the correct instant regardless of the server's timezone — Vercel
- * runs in UTC, where `setHours(12)` would yield 13:00 London during BST — and
- * across the BST/GMT switch. Pass a base date for testability.
+ * A group's weekly schedule, used to compute the next kickoff. Mirrors the
+ * Group schedule columns. (timezone is an IANA zone, e.g. "Europe/London".)
  */
-export function nextSundayNoon(now = new Date()): Date {
-  const p = londonParts(now);
-  // Day-of-week of the current London calendar date (0 = Sunday).
+export type GroupSchedule = {
+  kickoffWeekday: number; // 0=Sun .. 6=Sat
+  kickoffHour: number;
+  kickoffMinute: number;
+  timezone: string;
+};
+
+/**
+ * The next kickoff for a group's schedule — the next occurrence of its weekday
+ * at its wall-clock time (in the group's timezone), strictly in the future,
+ * returned as a UTC Date. Generalises the old `nextSundayNoon`.
+ *
+ * Computed via zoned parts + {@link zonedWallTimeToUtc} (not `setHours`) so the
+ * kickoff is the correct instant regardless of the server's timezone (Vercel
+ * runs in UTC) and across DST switches. Pass a base date for testability.
+ */
+export function nextKickoff(schedule: GroupSchedule, now = new Date()): Date {
+  const tz = schedule.timezone;
+  const p = zonedParts(now, tz);
+  // Day-of-week of the current calendar date in the group's timezone.
   const dow = new Date(Date.UTC(p.year, p.month - 1, p.day)).getUTCDay();
-  const daysUntilSun = dow === 0 ? 7 : 7 - dow;
+  // Always strictly the NEXT occurrence (today's weekday rolls to next week),
+  // matching the old nextSundayNoon behaviour the create-game action relies on.
+  let daysUntil = (schedule.kickoffWeekday - dow + 7) % 7;
+  if (daysUntil === 0) daysUntil = 7;
   const target = new Date(
-    Date.UTC(p.year, p.month - 1, p.day) + daysUntilSun * 24 * 60 * 60 * 1000,
+    Date.UTC(p.year, p.month - 1, p.day) + daysUntil * 24 * 60 * 60 * 1000,
   );
-  return londonWallTimeToUtc(
+  return zonedWallTimeToUtc(
     target.getUTCFullYear(),
     target.getUTCMonth() + 1,
     target.getUTCDate(),
-    12,
-    0,
+    schedule.kickoffHour,
+    schedule.kickoffMinute,
+    tz,
   );
 }
 
-export const LONDON_TZ = "Europe/London";
+/**
+ * Next Sunday at 12:00 Europe/London, as a UTC Date — the legacy default
+ * cadence. Thin wrapper over {@link nextKickoff} kept for the seed and tests.
+ */
+export function nextSundayNoon(now = new Date()): Date {
+  return nextKickoff(
+    { kickoffWeekday: 0, kickoffHour: 12, kickoffMinute: 0, timezone: LONDON_TZ },
+    now,
+  );
+}
 
-/** The London wall-clock parts of a UTC instant. */
-export function londonParts(d: Date): {
+/** The wall-clock parts of a UTC instant in the given timezone. */
+export function zonedParts(
+  d: Date,
+  timeZone: string,
+): {
   year: number;
   month: number; // 1-12
   day: number;
@@ -229,7 +259,7 @@ export function londonParts(d: Date): {
   minute: number;
 } {
   const dtf = new Intl.DateTimeFormat("en-GB", {
-    timeZone: LONDON_TZ,
+    timeZone,
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
@@ -252,11 +282,31 @@ export function londonParts(d: Date): {
   };
 }
 
+/** The London wall-clock parts of a UTC instant. */
+export function londonParts(d: Date) {
+  return zonedParts(d, LONDON_TZ);
+}
+
 /**
- * The UTC instant for a given London wall-clock time (DST-aware).
- * Daytime kickoffs (and 18:00 deadlines) are never near a DST transition — which
- * happens at 01:00/02:00 — so a single correction pass is exact.
+ * The UTC instant for a given wall-clock time in a timezone (DST-aware).
+ * Daytime kickoffs (and evening deadlines) are never near a DST transition —
+ * which happens at 01:00/02:00 — so a single correction pass is exact.
  */
+export function zonedWallTimeToUtc(
+  year: number,
+  month1: number, // 1-12
+  day: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): Date {
+  const guess = Date.UTC(year, month1 - 1, day, hour, minute);
+  const p = zonedParts(new Date(guess), timeZone);
+  const mapped = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
+  return new Date(guess - (mapped - guess));
+}
+
+/** The UTC instant for a given London wall-clock time (DST-aware). */
 export function londonWallTimeToUtc(
   year: number,
   month1: number, // 1-12
@@ -264,10 +314,7 @@ export function londonWallTimeToUtc(
   hour: number,
   minute: number,
 ): Date {
-  const guess = Date.UTC(year, month1 - 1, day, hour, minute);
-  const p = londonParts(new Date(guess));
-  const mapped = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
-  return new Date(guess - (mapped - guess));
+  return zonedWallTimeToUtc(year, month1, day, hour, minute, LONDON_TZ);
 }
 
 /**
@@ -282,31 +329,40 @@ export function londonInputValue(d: Date): string {
 }
 
 /**
- * Signup deadline for a game: 18:00 Europe/London on the Friday before kickoff.
- *
- * Derived from the kickoff so it always reflects the real game date, and it's
- * genuinely "6pm London" year-round (handles BST/GMT) — independent of when the
- * friday-lock cron actually fires.
+ * The legacy default: how many hours before kickoff signups close. 42h before a
+ * Sunday-noon kickoff lands on Friday 18:00. Groups override this via their
+ * `lockOffsetHours`.
  */
-export function signupDeadline(kickoffAt: Date): Date {
-  const k = londonParts(kickoffAt);
-  // Roll back 2 London calendar days (the kickoff Sunday → the Friday before).
-  const friday = new Date(
-    Date.UTC(k.year, k.month - 1, k.day) - 2 * 24 * 60 * 60 * 1000,
-  );
-  return londonWallTimeToUtc(
-    friday.getUTCFullYear(),
-    friday.getUTCMonth() + 1,
-    friday.getUTCDate(),
-    18,
-    0,
-  );
+export const DEFAULT_LOCK_OFFSET_HOURS = 42;
+
+/**
+ * Signup/lock deadline for a game: `lockOffsetHours` before kickoff. Derived
+ * from the kickoff so it always reflects the real game date, independent of when
+ * the admin actually locks the lineup. Defaults to the legacy Friday-6pm offset.
+ */
+export function lockDeadline(
+  kickoffAt: Date,
+  lockOffsetHours: number = DEFAULT_LOCK_OFFSET_HOURS,
+): Date {
+  return new Date(kickoffAt.getTime() - lockOffsetHours * 60 * 60 * 1000);
+}
+
+/** @deprecated Use {@link lockDeadline}. */
+export function signupDeadline(
+  kickoffAt: Date,
+  lockOffsetHours: number = DEFAULT_LOCK_OFFSET_HOURS,
+): Date {
+  return lockDeadline(kickoffAt, lockOffsetHours);
 }
 
 /** Signups are open only while the game is OPEN *and* we're before the deadline. */
 export function isSignupOpen(
   game: { status: GameStatus; kickoffAt: Date },
+  lockOffsetHours: number = DEFAULT_LOCK_OFFSET_HOURS,
   now: Date = new Date(),
 ): boolean {
-  return game.status === GameStatus.OPEN && now < signupDeadline(game.kickoffAt);
+  return (
+    game.status === GameStatus.OPEN &&
+    now < lockDeadline(game.kickoffAt, lockOffsetHours)
+  );
 }

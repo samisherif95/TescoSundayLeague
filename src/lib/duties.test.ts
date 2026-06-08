@@ -1,28 +1,14 @@
 import { describe, it, expect } from "vitest";
-import { assignExtras, isExemptFromDuties, pickExtra } from "@/lib/duties";
+import { assignExtras, pickExtra } from "@/lib/duties";
 
-// The hardcoded exemption (the organiser, who never gets a duty).
-const EXEMPT = "sellaboudy95@gmail.com";
-
+// Exemption is now a per-player boolean (from GroupMember.exemptFromDuties),
+// not a hardcoded email.
 function squad(n: number, opts: { exemptAt?: number } = {}) {
   return Array.from({ length: n }, (_, i) => ({
     id: `p${i}`,
-    email: opts.exemptAt === i ? EXEMPT : `p${i}@example.com`,
+    exempt: opts.exemptAt === i,
   }));
 }
-
-describe("isExemptFromDuties", () => {
-  it("matches the exempt email case-insensitively", () => {
-    expect(isExemptFromDuties(EXEMPT)).toBe(true);
-    expect(isExemptFromDuties(EXEMPT.toUpperCase())).toBe(true);
-  });
-
-  it("is false for other emails and for null/undefined", () => {
-    expect(isExemptFromDuties("someone@else.com")).toBe(false);
-    expect(isExemptFromDuties(null)).toBe(false);
-    expect(isExemptFromDuties(undefined)).toBe(false);
-  });
-});
 
 describe("assignExtras", () => {
   it("picks bibs and football as distinct, non-booker players when the pool is large", () => {
@@ -50,8 +36,8 @@ describe("assignExtras", () => {
 
   it("returns nulls when every player is exempt", () => {
     const players = [
-      { id: "a", email: EXEMPT },
-      { id: "b", email: EXEMPT },
+      { id: "a", exempt: true },
+      { id: "b", exempt: true },
     ];
     expect(assignExtras(players, null)).toEqual({
       bibsUserId: null,
@@ -70,6 +56,6 @@ describe("pickExtra", () => {
   });
 
   it("returns null when no eligible players remain", () => {
-    expect(pickExtra([{ id: "a", email: EXEMPT }], [])).toBeNull();
+    expect(pickExtra([{ id: "a", exempt: true }], [])).toBeNull();
   });
 });

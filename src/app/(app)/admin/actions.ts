@@ -4,8 +4,9 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
-import { requireAdmin } from "@/lib/session";
-import { nextSundayNoon } from "@/lib/game";
+import { requireGroupAdmin, requireGameAdmin } from "@/lib/session";
+import { nextKickoff } from "@/lib/game";
+import { openWeeklyGame } from "@/lib/weekly-game";
 import { lockGame } from "@/lib/lock";
 import { completeGame } from "@/lib/complete";
 import { cancelGame } from "@/lib/cancel";
@@ -24,23 +25,24 @@ const editSchema = z.object({
     .refine((u) => /^https?:\/\//i.test(u), "Must be an http(s) URL"),
 });
 
+/**
+ * Open the next game for the admin's active group. Uses the group's own
+ * schedule (kickoff day/time) + default pitch and notifies the group's members,
+ * via the shared openWeeklyGame.
+ */
 export async function createWeeklyGame() {
-  await requireAdmin();
-  const kickoff = nextSundayNoon();
-  const existing = await prisma.game.findFirst({
-    where: { kickoffAt: kickoff },
-  });
-  if (existing) return { error: "Game already exists for that Sunday" };
-  const game = await prisma.game.create({
-    data: { kickoffAt: kickoff, status: GameStatus.OPEN },
-  });
+  const { group } = await requireGroupAdmin();
+  const kickoff = nextKickoff(group);
+  const { gameId, created } = await openWeeklyGame(group.id, kickoff);
+  if (!created) {
+    return { error: "A game already exists for the next slot" };
+  }
   revalidatePath("/admin");
-  revalidatePath("/");
-  return { ok: true as const, gameId: game.id };
+  revalidatePath("/home");
+  return { ok: true as const, gameId };
 }
 
 export async function editGame(formData: FormData) {
-  await requireAdmin();
   const parsed = editSchema.safeParse({
     gameId: formData.get("gameId"),
     kickoffAt: formData.get("kickoffAt"),
@@ -48,6 +50,7 @@ export async function editGame(formData: FormData) {
     pitchBookingUrl: formData.get("pitchBookingUrl"),
   });
   if (!parsed.success) return { error: parsed.error.issues[0]?.message };
+  await requireGameAdmin(parsed.data.gameId);
   await prisma.game.update({
     where: { id: parsed.data.gameId },
     data: {
@@ -61,16 +64,58 @@ export async function editGame(formData: FormData) {
   return { ok: true as const };
 }
 
+const scheduleSchema = z.object({
+  kickoffWeekday: z.coerce.number().int().min(0).max(6),
+  kickoffHour: z.coerce.number().int().min(0).max(23),
+  kickoffMinute: z.coerce.number().int().min(0).max(59),
+  lockOffsetHours: z.coerce.number().int().min(1).max(336),
+  defaultPitchName: z.string().min(1).max(80),
+  defaultPitchBookingUrl: z
+    .string()
+    .url()
+    .refine((u) => /^https?:\/\//i.test(u), "Must be an http(s) URL"),
+  playerNote: z.string().trim().max(280),
+});
+
 /**
- * Admin safeguard: lock a game right now — pick the booker, assign duties,
- * generate teams, and notify everyone — without waiting on the Friday cron.
- * Delegates to the shared {@link lockGame} so it behaves identically to the
- * cron (fair booker rotation, bibs/football, emails + push).
+ * Admin: set the active group's defaults — which day/time it kicks off (the
+ * default kickoff used when an admin creates a game), how far ahead signups
+ * close, and the default pitch.
+ */
+export async function updateGroupSchedule(formData: FormData) {
+  const { group } = await requireGroupAdmin();
+  const parsed = scheduleSchema.safeParse({
+    kickoffWeekday: formData.get("kickoffWeekday"),
+    kickoffHour: formData.get("kickoffHour"),
+    kickoffMinute: formData.get("kickoffMinute"),
+    lockOffsetHours: formData.get("lockOffsetHours"),
+    defaultPitchName: formData.get("defaultPitchName"),
+    defaultPitchBookingUrl: formData.get("defaultPitchBookingUrl"),
+    playerNote: formData.get("playerNote") ?? "",
+  });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid schedule" };
+  }
+  const { playerNote, ...rest } = parsed.data;
+  await prisma.group.update({
+    where: { id: group.id },
+    // Empty note → null so the home banner hides rather than showing a blank.
+    data: { ...rest, playerNote: playerNote || null },
+  });
+  revalidatePath("/admin");
+  revalidatePath("/home");
+  return { ok: true as const };
+}
+
+/**
+ * Admin: lock a game — pick the booker, assign duties, generate teams, and
+ * notify everyone. Delegates to the shared {@link lockGame} (fair booker
+ * rotation, bibs/football, emails + push).
  */
 export async function lockGameAction(
   gameId: string,
 ): Promise<{ ok: true } | { error: string }> {
-  await requireAdmin();
+  await requireGameAdmin(gameId);
   if (!gameId) return { error: "Missing game id" };
   const result = await lockGame(gameId);
   if (!result.ok) return { error: result.error };
@@ -82,14 +127,13 @@ export async function lockGameAction(
 
 /**
  * Admin: end a game now — flip it to COMPLETED and email everyone the rating
- * link. Delegates to the shared {@link completeGame} so it behaves identically
- * to the Sunday cron. Use once the game's been played (works from LOCKED or
- * BOOKED).
+ * link. Delegates to the shared {@link completeGame}. Use once the game's been
+ * played (works from LOCKED or BOOKED).
  */
 export async function endGameAction(
   gameId: string,
 ): Promise<{ ok: true } | { error: string }> {
-  await requireAdmin();
+  await requireGameAdmin(gameId);
   if (!gameId) return { error: "Missing game id" };
   const result = await completeGame(gameId);
   if (!result.ok) return { error: result.error };
@@ -107,7 +151,7 @@ export async function endGameAction(
 export async function cancelGameAction(
   gameId: string,
 ): Promise<{ ok: true } | { error: string }> {
-  await requireAdmin();
+  await requireGameAdmin(gameId);
   if (!gameId) return { error: "Missing game id" };
   const result = await cancelGame(gameId);
   if (!result.ok) return { error: result.error };
@@ -126,7 +170,7 @@ export async function removeDebtorAction(
   gameId: string,
   debtorId: string,
 ): Promise<{ ok: true } | { error: string }> {
-  await requireAdmin();
+  await requireGameAdmin(gameId);
   if (!gameId || !debtorId) return { error: "Missing game or player id" };
 
   const game = await prisma.game.findUnique({
@@ -161,7 +205,7 @@ export async function removeDebtorAction(
 export async function regenerateSplitAction(
   gameId: string,
 ): Promise<{ ok: true } | { error: string }> {
-  await requireAdmin();
+  await requireGameAdmin(gameId);
   if (!gameId) return { error: "Missing game id" };
   const result = await generatePaymentRequests(gameId);
   if (!result.ok) return { error: result.error };
@@ -224,7 +268,7 @@ export async function reassignDutyAction(
   duty: Duty,
   userId: string,
 ): Promise<{ ok: true } | { error: string }> {
-  await requireAdmin();
+  await requireGameAdmin(gameId);
   const parsed = reassignSchema.safeParse({ gameId, duty, userId });
   if (!parsed.success) {
     return { error: parsed.error.issues[0]?.message ?? "Invalid request" };

@@ -10,10 +10,8 @@ export type CompleteResult =
 
 /**
  * Complete a single game: flip it to COMPLETED and email everyone the
- * "rate your teammates" link. Mirrors {@link lockGame} as the single source of
- * truth shared by:
- *  - the Sunday-complete cron (src/app/api/cron/sunday-complete/route.ts), and
- *  - the admin "End game now" button on the game page.
+ * "rate your teammates" link. Driven by the admin "End game now" button on the
+ * game page.
  *
  * A game can be ended from BOOKED (booker entered the cost) or LOCKED (teams
  * are out but the booker never recorded the cost). Idempotent on status — a

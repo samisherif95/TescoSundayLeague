@@ -2,22 +2,21 @@ import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { getGameHistory } from "@/lib/games-queries";
-import { requireOnboardedUser } from "@/lib/session";
+import { requireActiveGroup } from "@/lib/session";
 import { deriveScore, tallyScorers } from "@/lib/match";
 import { cn } from "@/lib/utils";
 
 export default async function GamesHistoryPage() {
-  const user = await requireOnboardedUser();
-  const games = await getGameHistory(user.id, user.isAdmin);
+  const { user, group, membership } = await requireActiveGroup();
+  const isAdmin = membership.role === "ADMIN";
+  const games = await getGameHistory(group.id, user.id, isAdmin);
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 px-4 py-6">
       <header>
         <h1 className="text-2xl font-semibold tracking-tight">Past games</h1>
         <p className="text-sm text-muted-foreground">
-          {user.isAdmin
-            ? "Every completed Sunday."
-            : "Sundays you played in."}
+          {isAdmin ? "Every completed Sunday." : "Sundays you played in."}
         </p>
       </header>
 

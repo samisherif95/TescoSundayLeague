@@ -8,12 +8,15 @@ import {
   SignupStatus,
 } from "@/generated/prisma/enums";
 import { AdminControls } from "./_controls";
+import { ScheduleEditor } from "./_schedule-editor";
+import { JoinKeyCard } from "./_join-key-card";
 
 export default async function AdminPage() {
-  await requireAdmin();
+  const { group } = await requireAdmin();
 
   const games = await prisma.game.findMany({
     where: {
+      groupId: group.id,
       status: {
         in: [GameStatus.OPEN, GameStatus.LOCKED, GameStatus.BOOKED],
       },
@@ -28,16 +31,32 @@ export default async function AdminPage() {
     },
   });
 
-  const totalUsers = await prisma.user.count();
+  const memberCount = await prisma.groupMember.count({
+    where: { groupId: group.id },
+  });
 
   return (
     <main className="mx-auto max-w-3xl space-y-6 px-4 py-6">
       <header>
-        <h1 className="text-2xl font-semibold">Admin</h1>
+        <h1 className="text-2xl font-semibold">{group.name}</h1>
         <p className="text-sm text-muted-foreground">
-          {totalUsers} total users
+          {memberCount} {memberCount === 1 ? "member" : "members"}
         </p>
       </header>
+
+      <JoinKeyCard joinKey={group.joinKey} />
+
+      <ScheduleEditor
+        schedule={{
+          kickoffWeekday: group.kickoffWeekday,
+          kickoffHour: group.kickoffHour,
+          kickoffMinute: group.kickoffMinute,
+          lockOffsetHours: group.lockOffsetHours,
+          defaultPitchName: group.defaultPitchName,
+          defaultPitchBookingUrl: group.defaultPitchBookingUrl,
+          playerNote: group.playerNote ?? "",
+        }}
+      />
 
       <AdminControls hasOpen={games.some((g) => g.status === GameStatus.OPEN)} />
 

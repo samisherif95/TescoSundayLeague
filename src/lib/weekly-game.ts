@@ -5,55 +5,70 @@ import { sendPushToUsers } from "@/lib/push";
 import { env } from "@/lib/env";
 
 /**
- * Open (or fetch) the weekly OPEN game for a given Sunday kickoff and notify the
- * squad. Idempotent on kickoff — if a game already exists for that instant it's
- * returned untouched and no notifications are sent.
+ * Open (or fetch) a group's weekly OPEN game for a given kickoff and notify that
+ * group's members (and ONLY that group's members — not every user on the site).
+ * Idempotent on (group, kickoff) — if a game already exists for that group at
+ * that instant it's returned untouched and no notifications are sent.
  *
- * Shared by the Monday create-weekly-game cron and the Friday cancel path, which
- * rolls the game forward to the following Sunday when we're short of players.
+ * Driven by the admin "Create game" control. New games inherit the group's
+ * default pitch.
  */
 export async function openWeeklyGame(
+  groupId: string,
   kickoff: Date,
 ): Promise<{ gameId: string; created: boolean }> {
   const existing = await prisma.game.findFirst({
-    where: { kickoffAt: kickoff },
+    where: { groupId, kickoffAt: kickoff },
   });
   if (existing) return { gameId: existing.id, created: false };
 
+  const group = await prisma.group.findUnique({ where: { id: groupId } });
+  if (!group) throw new Error("Group not found");
+
   const game = await prisma.game.create({
-    data: { kickoffAt: kickoff, status: GameStatus.OPEN },
+    data: {
+      groupId,
+      kickoffAt: kickoff,
+      status: GameStatus.OPEN,
+      pitchName: group.defaultPitchName,
+      pitchBookingUrl: group.defaultPitchBookingUrl,
+    },
   });
 
   const when = kickoff.toLocaleDateString("en-GB", {
     day: "numeric",
     month: "long",
-    timeZone: "Europe/London",
+    timeZone: group.timezone,
   });
 
-  const users = await prisma.user.findMany({
-    where: { email: { not: null }, name: { not: null } },
-    select: { email: true, name: true },
+  // Recipients are this group's members only.
+  const members = await prisma.groupMember.findMany({
+    where: { groupId },
+    select: { user: { select: { id: true, email: true, name: true } } },
   });
+  const users = members.map((m) => m.user);
+
   await Promise.allSettled(
     users
-      .filter((u): u is { email: string; name: string } => Boolean(u.email))
+      .filter((u): u is { id: string; email: string; name: string } =>
+        Boolean(u.email && u.name),
+      )
       .map((u) =>
         sendEmail({
           to: u.email,
-          subject: `Sunday football ${when} — sign up`,
+          subject: `${group.name} — Sunday football ${when}, sign up`,
           html: `<p>Hey ${u.name ?? "there"},</p>
-            <p>New game is open for Sunday. <a href="${env.appUrl}/games/${game.id}">Tap to sign up</a>.</p>
-            <p>Signups close Friday 6pm — if we hit 10+ we'll lock and pick a booker.</p>`,
+            <p>New game is open for ${group.name}. <a href="${env.appUrl}/games/${game.id}">Tap to sign up</a>.</p>
+            <p>Sign up before the deadline — if we hit 10+ we'll lock and pick a booker.</p>`,
         }),
       ),
   );
 
-  const everyone = await prisma.user.findMany({ select: { id: true } });
   await sendPushToUsers(
-    everyone.map((u) => u.id),
+    users.map((u) => u.id),
     {
       title: "New game open ⚽",
-      body: `Sign up for Sunday ${when}.`,
+      body: `Sign up for ${group.name} — ${when}.`,
       url: `/games/${game.id}`,
     },
   );

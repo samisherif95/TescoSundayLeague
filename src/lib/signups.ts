@@ -13,7 +13,7 @@ import {
   signupDeadline,
   type BookerCandidate,
 } from "@/lib/game";
-import { isExemptFromDuties, pickExtra } from "@/lib/duties";
+import { pickExtra } from "@/lib/duties";
 import { Prisma } from "@/generated/prisma/client";
 
 type Tx = Prisma.TransactionClient;
@@ -79,18 +79,40 @@ async function regenerateTeams(tx: Tx, gameId: string) {
   }
 }
 
-/** Re-pick the booker fairly from a game's current CONFIRMED signups. */
-async function repickBooker(tx: Tx, gameId: string): Promise<string> {
+/** The set of userIds in a group who are exempt from duties (per GroupMember). */
+async function exemptUserIds(
+  tx: Tx,
+  groupId: string | null,
+): Promise<Set<string>> {
+  if (!groupId) return new Set();
+  const rows = await tx.groupMember.findMany({
+    where: { groupId, exemptFromDuties: true },
+    select: { userId: true },
+  });
+  return new Set(rows.map((r) => r.userId));
+}
+
+/**
+ * Re-pick the booker fairly from a game's current CONFIRMED signups. Rotation is
+ * scoped to the game's group — past bookings in other groups don't count.
+ */
+async function repickBooker(
+  tx: Tx,
+  gameId: string,
+  groupId: string | null,
+): Promise<string> {
   const confirmed = await tx.signup.findMany({
     where: { gameId, status: SignupStatus.CONFIRMED },
-    select: { userId: true, user: { select: { email: true } } },
+    select: { userId: true },
   });
   // Exempt players are quietly never picked for a duty.
-  const eligible = confirmed.filter((s) => !isExemptFromDuties(s.user.email));
+  const exempt = await exemptUserIds(tx, groupId);
+  const eligible = confirmed.filter((s) => !exempt.has(s.userId));
   const pool = eligible.length > 0 ? eligible : confirmed;
   const ids = pool.map((s) => s.userId);
   const pastBookings = await tx.game.findMany({
     where: {
+      groupId,
       bookerId: { in: ids },
       status: { in: [GameStatus.BOOKED, GameStatus.COMPLETED] },
     },
@@ -121,11 +143,17 @@ export async function joinGame(
   position: Position,
 ): Promise<SignupResult> {
   return serializableTx(async (tx) => {
-    const game = await tx.game.findUnique({ where: { id: gameId } });
+    const game = await tx.game.findUnique({
+      where: { id: gameId },
+      include: { group: { select: { lockOffsetHours: true } } },
+    });
     if (!game) throw new Error("Game not found");
-    // Closed once the game leaves OPEN *or* the Friday-6pm deadline passes —
-    // the deadline gates signups even if the friday-lock cron hasn't run yet.
-    if (game.status !== GameStatus.OPEN || new Date() >= signupDeadline(game.kickoffAt)) {
+    // Closed once the game leaves OPEN *or* the group's signup deadline passes —
+    // the deadline gates signups even before an admin locks the lineup.
+    if (
+      game.status !== GameStatus.OPEN ||
+      new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours)
+    ) {
       return { kind: "GAME_LOCKED" as const };
     }
 
@@ -301,22 +329,23 @@ export async function leaveGame(
     if (wasConfirmed && game.status === GameStatus.LOCKED) {
       const confirmed = await tx.signup.findMany({
         where: { gameId, status: SignupStatus.CONFIRMED },
-        select: { userId: true, user: { select: { email: true } } },
+        select: { userId: true },
       });
       const guestCount = await tx.guest.count({ where: { gameId } });
       // Guests still count toward the roster, so a game stays locked as long as
       // members + guests clear the minimum.
       if (confirmed.length + guestCount >= MIN_PLAYERS) {
         const stillIn = new Set(confirmed.map((s) => s.userId));
+        const exempt = await exemptUserIds(tx, game.groupId);
         const dutyPlayers = confirmed.map((s) => ({
           id: s.userId,
-          email: s.user.email,
+          exempt: exempt.has(s.userId),
         }));
 
         // Re-pick any duty whose holder has dropped out.
         let bookerId = game.bookerId;
         if (!bookerId || !stillIn.has(bookerId)) {
-          bookerId = await repickBooker(tx, gameId);
+          bookerId = await repickBooker(tx, gameId, game.groupId);
           newBookerId = bookerId;
         }
         let bibsId = game.bibsUserId;

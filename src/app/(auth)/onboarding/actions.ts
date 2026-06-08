@@ -39,5 +39,7 @@ export async function saveOnboarding(formData: FormData) {
       preferredPosition: parsed.data.preferredPosition as Position,
     },
   });
-  redirect("/home");
+  // New users have no group yet — send them to the picker to join or create one
+  // (existing users with a group are bounced straight to /home from there).
+  redirect("/");
 }

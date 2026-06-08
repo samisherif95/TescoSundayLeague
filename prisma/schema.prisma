@@ -109,6 +109,14 @@ enum MatchStatus {
   COMPLETED // result is final
 }
 
+// A member's role within a single group. The creator of a group is its first
+// ADMIN; everyone who joins via the key is a MEMBER. This is the per-group
+// equivalent of the old global `User.isAdmin` (which is now platform-only).
+enum GroupRole {
+  ADMIN
+  MEMBER
+}
+
 model User {
   id                String    @id @default(cuid())
   name              String?
@@ -138,10 +146,63 @@ model User {
   paymentsDue       PaymentRequest[]   @relation("Booker")
   pushSubscriptions PushSubscription[]
   goals             Goal[]
+  groupMemberships  GroupMember[]
+}
+
+// A group is a self-contained club: its own roster (via GroupMember), its own
+// weekly games, its own schedule, and its own admin(s). New users join by
+// entering the group's `joinKey`. Everything that used to be global — the game
+// pool, notifications, booker rotation — is now scoped to one Group.
+model Group {
+  id                    String   @id @default(cuid())
+  name                  String
+  joinKey               String   @unique // share token entered at join time
+  // --- per-group weekly schedule (replaces the hardcoded Sunday-noon cadence) ---
+  kickoffWeekday        Int      @default(0) // 0=Sun .. 6=Sat (in `timezone`)
+  kickoffHour           Int      @default(12) // wall-clock hour in `timezone`
+  kickoffMinute         Int      @default(0)
+  timezone              String   @default("Europe/London")
+  // Lock deadline = kickoff − this many hours (42h before Sun-noon ≈ Fri 18:00).
+  // Drives when signups close; the admin still locks the lineup manually.
+  lockOffsetHours       Int      @default(42)
+  // --- defaults stamped onto each game the admin creates ---
+  defaultPitchName       String  @default("Ladbroke Grove")
+  defaultPitchBookingUrl String  @default("https://hireapitch.com/ladbroke-grove")
+  // Free-text note the admin can show all members (e.g. "the game is auto-
+  // generated between Mon and Thu"). Displayed on the home page; null = hidden.
+  playerNote            String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  members GroupMember[]
+  games   Game[]
+}
+
+// Join row linking a User to a Group, with their role in that group. A user can
+// belong to many groups (and switch between them); a group has many members.
+// `exemptFromDuties` replaces the old hardcoded EXEMPT_EMAILS set — an organizer
+// who never wants to be picked for booker/bibs/football sets this on themselves.
+model GroupMember {
+  id               String    @id @default(cuid())
+  groupId          String
+  userId           String
+  role             GroupRole @default(MEMBER)
+  exemptFromDuties Boolean   @default(false)
+  joinedAt         DateTime  @default(now())
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, userId])
+  @@index([userId]) // "list my groups" (root picker)
+  @@index([groupId]) // "list members of a group" (notification scoping)
 }
 
 model Game {
   id              String     @id @default(cuid())
+  // NOTE: nullable during the additive migration step; flipped to required after
+  // the backfill stamps every existing game (see prisma/backfill-multi-group.ts).
+  groupId         String?
   kickoffAt       DateTime
   pitchName       String     @default("Ladbroke Grove")
   pitchBookingUrl String     @default("https://hireapitch.com/ladbroke-grove")
@@ -156,6 +217,7 @@ model Game {
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
+  group           Group?           @relation(fields: [groupId], references: [id], onDelete: Cascade)
   booker          User?            @relation("Booker", fields: [bookerId], references: [id])
   bibsBringer     User?            @relation("Bibs", fields: [bibsUserId], references: [id])
   footballBringer User?            @relation("Football", fields: [footballUserId], references: [id])
@@ -168,11 +230,11 @@ model Game {
 
   @@index([kickoffAt])
   @@index([status])
-  // Matches the hot access patterns: filter by status, range/order by kickoffAt
-  // (getCurrentGame, friday-lock, sunday-complete crons).
-  @@index([status, kickoffAt])
-  // booker-picking queries filter `bookerId: { in: [...] }`.
-  @@index([bookerId])
+  // Matches the hot access patterns: filter by group + status, range/order by
+  // kickoffAt (getCurrentGame, friday-lock, sunday-complete crons).
+  @@index([groupId, status, kickoffAt])
+  // booker-picking queries filter by group and `bookerId: { in: [...] }`.
+  @@index([groupId, bookerId])
 }
 
 model Signup {

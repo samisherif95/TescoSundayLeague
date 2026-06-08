@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PlayerPill } from "@/components/player-pill";
 import { getGameWithDetail } from "@/lib/games-queries";
-import { requireOnboardedUser } from "@/lib/session";
+import { requireOnboardedUser, requireGroupMember } from "@/lib/session";
 import {
   GameStatus,
   SignupStatus,
@@ -44,6 +44,10 @@ export default async function GameDetailPage({
     getGameWithDetail(id),
   ]);
   if (!game) notFound();
+  // You can only see a game in a group you belong to — guessing an id from
+  // another group 404s. `isAdmin` here means admin OF THIS GAME'S GROUP.
+  const membership = await requireGroupMember(game.groupId);
+  const isAdmin = membership.role === "ADMIN";
 
   const confirmed = game.signups.filter(
     (s) => s.status === SignupStatus.CONFIRMED,
@@ -56,7 +60,7 @@ export default async function GameDetailPage({
     (s) => s.userId === user.id && s.status !== SignupStatus.DROPPED_OUT,
   );
   const isBooker = game.bookerId === user.id;
-  const signupsOpen = isSignupOpen(game);
+  const signupsOpen = isSignupOpen(game, game.group?.lockOffsetHours);
 
   // +1 guests count as bodies on the pitch, so the roster (and "more needed")
   // is members + guests.
@@ -80,7 +84,7 @@ export default async function GameDetailPage({
 
   // Anyone playing that Sunday can run the timer and record matches.
   const canRecord =
-    user.isAdmin ||
+    isAdmin ||
     isBooker ||
     mySignup?.status === SignupStatus.CONFIRMED;
 
@@ -205,7 +209,7 @@ export default async function GameDetailPage({
         </div>
       </section>
 
-      {user.isAdmin &&
+      {isAdmin &&
         (game.status === GameStatus.LOCKED ||
           game.status === GameStatus.BOOKED) && (
           <DutiesEditor
@@ -220,13 +224,13 @@ export default async function GameDetailPage({
           />
         )}
 
-      {user.isAdmin &&
+      {isAdmin &&
         (game.status === GameStatus.LOCKED ||
           game.status === GameStatus.BOOKED) && (
           <AdminEndCard gameId={game.id} />
         )}
 
-      {user.isAdmin &&
+      {isAdmin &&
         (game.status === GameStatus.OPEN ||
           game.status === GameStatus.LOCKED ||
           game.status === GameStatus.BOOKED) && (
@@ -262,7 +266,7 @@ export default async function GameDetailPage({
         </Card>
       )}
 
-      {game.status === GameStatus.OPEN && user.isAdmin && (
+      {game.status === GameStatus.OPEN && isAdmin && (
         <AdminLockCard
           gameId={game.id}
           confirmedCount={rosterCount}
@@ -270,7 +274,7 @@ export default async function GameDetailPage({
         />
       )}
 
-      {game.status === GameStatus.OPEN && user.isAdmin && (
+      {game.status === GameStatus.OPEN && isAdmin && (
         <AllowGuestsToggle gameId={game.id} allow={game.allowGuests} />
       )}
 
@@ -350,7 +354,7 @@ export default async function GameDetailPage({
               key={g.id}
               name={`${g.host.name ?? "Someone"} +1`}
               trailing={
-                g.hostUserId === user.id || user.isAdmin ? (
+                g.hostUserId === user.id || isAdmin ? (
                   <RemoveGuestButton guestId={g.id} />
                 ) : (
                   <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
@@ -394,7 +398,7 @@ export default async function GameDetailPage({
         <TeamsEditor
           gameId={game.id}
           teams={teamsData}
-          editable={user.isAdmin}
+          editable={isAdmin}
         />
       )}
 
@@ -416,7 +420,7 @@ export default async function GameDetailPage({
         game.paymentRequests.length > 0 &&
         (mySignup?.status === SignupStatus.CONFIRMED ||
           isBooker ||
-          user.isAdmin) && (
+          isAdmin) && (
           <section className="space-y-3">
             <h2 className="text-lg font-semibold">
               <Wallet className="mr-2 inline h-5 w-5" />
@@ -443,7 +447,7 @@ export default async function GameDetailPage({
               gameId={game.id}
               currentUserId={user.id}
               isBooker={isBooker}
-              isAdmin={user.isAdmin}
+              isAdmin={isAdmin}
               bookerName={game.booker?.name ?? null}
               rows={game.paymentRequests.map((p) => ({
                 id: p.id,

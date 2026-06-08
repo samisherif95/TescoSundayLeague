@@ -52,9 +52,6 @@ export const env = {
   get emailFrom() {
     return process.env.EMAIL_FROM ?? "Sunday League <noreply@example.com>";
   },
-  get cronSecret() {
-    return required("CRON_SECRET");
-  },
   get vapidPublicKey() {
     return optional("NEXT_PUBLIC_VAPID_PUBLIC_KEY");
   },

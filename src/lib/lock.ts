@@ -10,7 +10,7 @@ import {
 } from "@/lib/game";
 import { sendEmail } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
-import { assignExtras, isExemptFromDuties } from "@/lib/duties";
+import { assignExtras } from "@/lib/duties";
 import { env } from "@/lib/env";
 
 export type LockResult =
@@ -27,17 +27,14 @@ export type LockResult =
 /**
  * Lock a single OPEN game: fairly pick the booker, assign bibs/football duties,
  * generate balanced teams, and notify everyone (email + push). Idempotent on
- * status — only an OPEN game can be locked, so a double-fire (e.g. the Friday
- * cron racing an admin's manual lock) no-ops with a clear error instead of
- * re-shuffling teams or double-notifying.
+ * status — only an OPEN game can be locked, so a double-click no-ops with a
+ * clear error instead of re-shuffling teams or double-notifying.
  *
- * This is the single source of truth shared by:
- *  - the Friday-lock cron (src/app/api/cron/friday-lock/route.ts), and
- *  - the admin "Lock game now" safeguard button.
+ * Driven by the admin "Lock game now" button on the game page.
  *
- * It does NOT cancel under-subscribed games — that roll-forward behaviour is
- * cron-specific and stays in the cron. lockGame just refuses (returns an error)
- * when there aren't {@link MIN_PLAYERS} confirmed players.
+ * It does NOT cancel under-subscribed games — lockGame just refuses (returns an
+ * error) when there aren't {@link MIN_PLAYERS} confirmed players, leaving the
+ * admin to cancel the game instead.
  *
  * Notifications are best-effort: a flaky SMTP/push send never rolls back the
  * lock (teams are already committed in the DB).
@@ -74,15 +71,32 @@ export async function lockGame(gameId: string): Promise<LockResult> {
     };
   }
 
+  // Who in this group is exempt from duties (never picked for a chore).
+  const exempt = game.groupId
+    ? new Set(
+        (
+          await prisma.groupMember.findMany({
+            where: {
+              groupId: game.groupId,
+              exemptFromDuties: true,
+              userId: { in: confirmed.map((s) => s.user.id) },
+            },
+            select: { userId: true },
+          })
+        ).map((r) => r.userId),
+      )
+    : new Set<string>();
+
   // Fairly pick the booker: spread the chore by past-booking history.
-  // Exempt players are quietly never picked for a duty.
-  const eligible = confirmed.filter((s) => !isExemptFromDuties(s.user.email));
+  const eligible = confirmed.filter((s) => !exempt.has(s.user.id));
   const bookerPool = eligible.length > 0 ? eligible : confirmed;
   // Aggregate each candidate's booking count + last-booked date in the DB
-  // rather than pulling every past game and scanning in JS.
+  // rather than pulling every past game and scanning in JS. Scoped to this
+  // group so bookings elsewhere don't skew the rotation.
   const bookingStats = await prisma.game.groupBy({
     by: ["bookerId"],
     where: {
+      groupId: game.groupId,
       bookerId: { in: bookerPool.map((s) => s.user.id) },
       status: { in: [GameStatus.BOOKED, GameStatus.COMPLETED] },
     },
@@ -103,7 +117,7 @@ export async function lockGame(gameId: string): Promise<LockResult> {
 
   // Randomly assign who brings the bibs and the football (distinct people).
   const { bibsUserId, footballUserId } = assignExtras(
-    confirmed.map((s) => ({ id: s.user.id, email: s.user.email })),
+    confirmed.map((s) => ({ id: s.user.id, exempt: exempt.has(s.user.id) })),
     bookerId,
   );
 
