@@ -9,7 +9,7 @@ const { db, requireAdmin, setBilledMembers, generatePaymentRequests } =
     generatePaymentRequests: vi.fn(),
   }));
 vi.mock("@/lib/db", () => ({ prisma: db }));
-vi.mock("@/lib/session", () => ({ requireAdmin }));
+vi.mock("@/lib/session", () => ({ requireGameAdmin: requireAdmin }));
 vi.mock("@/lib/payments", () => ({ setBilledMembers, generatePaymentRequests }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 

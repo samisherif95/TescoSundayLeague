@@ -90,8 +90,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
       return session;
     },
     async signIn({ user, account }) {
-      // Bootstrap admin via env allowlist — only over Google (verified email),
-      // never the local-only demo impersonation provider.
+      // Bootstrap the PLATFORM-level User.isAdmin via env allowlist — only over
+      // Google (verified email), never the local-only demo provider. NOTE: this
+      // flag no longer gates the product UI; per-group admin is GroupMember.role
+      // (see requireGroupAdmin). isAdmin is reserved for future platform tooling.
       if (
         account?.provider === "google" &&
         user?.email &&

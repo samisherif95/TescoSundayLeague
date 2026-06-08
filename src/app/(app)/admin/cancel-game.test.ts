@@ -10,7 +10,7 @@ const { db, requireAdmin, sendEmail, sendPushToUsers } = vi.hoisted(() => ({
   sendPushToUsers: vi.fn(),
 }));
 vi.mock("@/lib/db", () => ({ prisma: db }));
-vi.mock("@/lib/session", () => ({ requireAdmin }));
+vi.mock("@/lib/session", () => ({ requireGameAdmin: requireAdmin }));
 vi.mock("@/lib/email", () => ({ sendEmail }));
 vi.mock("@/lib/push", () => ({ sendPushToUsers }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));

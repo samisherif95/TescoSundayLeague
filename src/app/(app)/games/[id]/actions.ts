@@ -8,7 +8,7 @@ import {
   SignupStatus,
 } from "@/generated/prisma/enums";
 import { prisma } from "@/lib/db";
-import { requireOnboardedUser } from "@/lib/session";
+import { requireOnboardedUser, requireGameMember } from "@/lib/session";
 import { joinGame, leaveGame } from "@/lib/signups";
 import { sendEmail } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
@@ -26,6 +26,7 @@ export async function joinGameAction(formData: FormData) {
     position: formData.get("position"),
   });
   if (!parsed.success) return { error: "Invalid input" };
+  await requireGameMember(parsed.data.gameId); // must belong to the game's group
   const result = await joinGame(
     parsed.data.gameId,
     user.id,
@@ -40,6 +41,7 @@ export async function leaveGameAction(formData: FormData) {
   const user = await requireOnboardedUser();
   const gameId = String(formData.get("gameId") ?? "");
   if (!gameId) return { error: "Missing game id" };
+  await requireGameMember(gameId); // must belong to the game's group
 
   const outcome = await leaveGame(gameId, user.id);
   const gameUrl = `/games/${gameId}`;
@@ -145,6 +147,7 @@ export async function leaveGameAction(formData: FormData) {
 /** Booker-only: push a payment reminder to everyone who still owes. */
 export async function nudgeUnpaidAction(gameId: string) {
   const user = await requireOnboardedUser();
+  await requireGameMember(gameId);
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) return { error: "Game not found" };
   if (game.bookerId !== user.id) return { error: "Only the booker can do this" };

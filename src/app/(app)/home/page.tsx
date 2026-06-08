@@ -4,6 +4,7 @@ import {
   CalendarDays,
   CircleAlert,
   Clock,
+  Info,
   MapPin,
   Sparkles,
 } from "lucide-react";
@@ -11,7 +12,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { getCurrentGame } from "@/lib/games-queries";
-import { requireOnboardedUser } from "@/lib/session";
+import { requireActiveGroup } from "@/lib/session";
 import { GameStatus, Position, SignupStatus } from "@/generated/prisma/enums";
 import {
   MAX_PLAYERS,
@@ -64,16 +65,15 @@ const STATUS_META: Record<
 };
 
 export default async function HomePage() {
-  // Independent queries — run them together rather than waterfalling.
-  const [user, game] = await Promise.all([
-    requireOnboardedUser(),
-    getCurrentGame(),
-  ]);
+  const { user, group, membership } = await requireActiveGroup();
+  const isAdmin = membership.role === "ADMIN";
+  const game = await getCurrentGame(group.id);
 
   if (!game) {
     return (
-      <main className="mx-auto max-w-3xl px-4 py-10 sm:px-6">
-        <EmptyState isAdmin={user.isAdmin} />
+      <main className="mx-auto max-w-3xl space-y-6 px-4 py-10 sm:px-6">
+        {group.playerNote && <PlayerNote note={group.playerNote} />}
+        <EmptyState isAdmin={isAdmin} />
       </main>
     );
   }
@@ -95,9 +95,10 @@ export default async function HomePage() {
   // once locked/booked/done the tile shows the status word instead.
   const showNeed = game.status === GameStatus.OPEN && needed > 0;
 
-  // For an OPEN game, signups can be closed by the clock before the cron has
-  // flipped the status — reflect that honestly instead of the static copy.
-  const signupsOpen = isSignupOpen(game);
+  // For an OPEN game, signups can be closed by the clock (past the lock
+  // deadline) before an admin locks it — reflect that honestly.
+  const lockOffset = game.group?.lockOffsetHours;
+  const signupsOpen = isSignupOpen(game, lockOffset);
   const label =
     game.status === GameStatus.OPEN && !signupsOpen
       ? "Signups closed"
@@ -105,7 +106,7 @@ export default async function HomePage() {
   const helper =
     game.status === GameStatus.OPEN
       ? signupsOpen
-        ? `Sign up below — closes ${formatDeadline(signupDeadline(game.kickoffAt))}.`
+        ? `Sign up below — closes ${formatDeadline(signupDeadline(game.kickoffAt, lockOffset))}.`
         : "Signups have closed — locking the lineup shortly."
       : meta.helper;
 
@@ -119,6 +120,8 @@ export default async function HomePage() {
           This Sunday
         </h1>
       </header>
+
+      {group.playerNote && <PlayerNote note={group.playerNote} />}
 
       <Card className="overflow-hidden border-primary/15 p-0">
         <div className="relative bg-pitch-grid">
@@ -202,6 +205,15 @@ export default async function HomePage() {
         </CardContent>
       </Card>
     </main>
+  );
+}
+
+function PlayerNote({ note }: { note: string }) {
+  return (
+    <div className="flex items-start gap-2.5 rounded-xl border border-primary/20 bg-primary/5 px-4 py-3 text-sm">
+      <Info className="mt-0.5 size-4 shrink-0 text-primary" />
+      <p className="text-foreground/90">{note}</p>
+    </div>
   );
 }
 
@@ -376,8 +388,9 @@ function EmptyState({ isAdmin }: { isAdmin: boolean }) {
         No game yet this week
       </h2>
       <p className="mt-2 text-sm text-muted-foreground">
-        A new game is auto-generated at a random point through the week — keep
-        an eye out.
+        {isAdmin
+          ? "Create this week's game to open signups for your group."
+          : "Your group admin hasn't opened a game yet — check back soon."}
       </p>
       {isAdmin && (
         <Button asChild className="mt-6">

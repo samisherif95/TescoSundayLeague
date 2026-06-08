@@ -1,15 +1,11 @@
 import { pickRandom } from "@/lib/game";
 
-// Players who are quietly never picked for a game duty (booker / bibs /
-// football). They still play and pay their own share — they're just never
-// the one assigned to bring or collect anything.
-const EXEMPT_EMAILS = new Set<string>(["sellaboudy95@gmail.com"]);
-
-export function isExemptFromDuties(email: string | null | undefined): boolean {
-  return !!email && EXEMPT_EMAILS.has(email.toLowerCase());
-}
-
-export type DutyPlayer = { id: string; email: string | null };
+// A confirmed player as far as game duties care: their id and whether they're
+// exempt from ever being picked for booker / bibs / football. Exemption is now
+// per-group data (GroupMember.exemptFromDuties) — an organizer who quietly never
+// wants a chore — rather than a hardcoded email allowlist. Exempt players still
+// play and pay their own share; they're just never assigned to bring/collect.
+export type DutyPlayer = { id: string; exempt: boolean };
 
 /**
  * Randomly pick who brings the bibs and the football from the eligible
@@ -20,9 +16,7 @@ export function assignExtras(
   players: DutyPlayer[],
   bookerId: string | null,
 ): { bibsUserId: string | null; footballUserId: string | null } {
-  const eligible = players
-    .filter((p) => !isExemptFromDuties(p.email))
-    .map((p) => p.id);
+  const eligible = players.filter((p) => !p.exempt).map((p) => p.id);
   if (eligible.length === 0) {
     return { bibsUserId: null, footballUserId: null };
   }
@@ -41,9 +35,7 @@ export function pickExtra(
   players: DutyPlayer[],
   avoid: (string | null)[],
 ): string | null {
-  const eligible = players
-    .filter((p) => !isExemptFromDuties(p.email))
-    .map((p) => p.id);
+  const eligible = players.filter((p) => !p.exempt).map((p) => p.id);
   if (eligible.length === 0) return null;
   return pickRandom(preferExcluding(eligible, avoid));
 }

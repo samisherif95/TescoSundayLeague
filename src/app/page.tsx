@@ -1,5 +1,4 @@
 import Link from "next/link";
-import { redirect } from "next/navigation";
 import {
   CalendarClock,
   Dice5,
@@ -11,12 +10,40 @@ import {
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { auth } from "@/auth";
+import { prisma } from "@/lib/db";
+import { requireOnboardedUser } from "@/lib/session";
+import { GroupPicker } from "./_group-picker";
 
 const isDemo = process.env.DEMO_MODE === "1";
 
-export default async function LandingPage() {
+export default async function LandingPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ key?: string }>;
+}) {
   const session = await auth().catch(() => null);
-  if (session?.user) redirect("/home");
+
+  // Logged-in: this is the groups hub — pick/switch a group, or join/create one.
+  // (Onboarding-incomplete users are bounced to /onboarding by requireOnboardedUser.)
+  if (session?.user) {
+    const user = await requireOnboardedUser();
+    const memberships = await prisma.groupMember.findMany({
+      where: { userId: user.id },
+      include: { group: { select: { name: true } } },
+      orderBy: { joinedAt: "asc" },
+    });
+    const { key } = await searchParams;
+    return (
+      <GroupPicker
+        groups={memberships.map((m) => ({
+          id: m.groupId,
+          name: m.group.name,
+          role: m.role,
+        }))}
+        prefillKey={key ?? ""}
+      />
+    );
+  }
 
   return (
     <>
@@ -80,8 +107,8 @@ function Hero() {
             </span>
           </h1>
           <p className="mx-auto mt-6 max-w-xl text-pretty text-lg text-muted-foreground sm:text-xl">
-            Stop chasing your mates on WhatsApp. We pick the booker, build balanced
-            teams, and chase the money — every Sunday, on autopilot.
+            Stop chasing your mates on WhatsApp. One tap opens the game, we pick the
+            booker, build balanced teams, and chase the money — minus the group-chat chaos.
           </p>
           <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
             <Button asChild size="lg" className="min-w-44">
@@ -114,13 +141,13 @@ function Hero() {
 const FEATURES = [
   {
     icon: CalendarClock,
-    title: "Auto-created weekly",
-    body: "A new game is auto-generated at a random point through the week for the upcoming Sunday. One email to the squad, and signups are open until the lineup's locked.",
+    title: "One-tap game setup",
+    body: "Your group admin opens each week's game with a tap. Everyone gets an email and a push, and signups stay open until the lineup's locked.",
   },
   {
     icon: Dice5,
     title: "Random booker selection",
-    body: "Once 10+ have signed up, we randomly pick someone to book the pitch and send them the booking link by email and SMS.",
+    body: "Once enough have signed up, the admin locks the lineup — we randomly pick someone to book the pitch and send them the booking link by email and push.",
   },
   {
     icon: Wallet,
@@ -171,29 +198,29 @@ function FeatureGrid() {
 
 const STEPS = [
   {
-    day: "Mon",
+    day: "Open",
     title: "Game opens",
-    body: "A new Sunday game is auto-created at 9am. Everyone gets an email.",
+    body: "Your admin opens the week's game — everyone gets an email and a push to sign up.",
   },
   {
-    day: "Mon–Fri",
-    title: "Sign up",
-    body: "Tap “I'm in” and pick your position. First 15 confirmed, rest go on the waitlist.",
+    day: "Sign up",
+    title: "Pick your spot",
+    body: "Tap “I'm in” and pick your position. First 15 confirmed, the rest go on the waitlist.",
   },
   {
-    day: "Fri 6pm",
-    title: "Booker picked",
-    body: "If 10+ have signed up, we lock the squad, randomly pick a booker, and build balanced teams.",
+    day: "Lock",
+    title: "Teams picked",
+    body: "Once there are enough players, the admin locks the lineup — we pick a booker and build balanced teams.",
   },
   {
-    day: "Sat",
+    day: "Book",
     title: "Pitch booked",
-    body: "Booker opens hireapitch.com via deep link, books, enters total cost — Monzo links go out.",
+    body: "The booker opens hireapitch.com via a deep link, books, and enters the cost — Monzo links go out.",
   },
   {
-    day: "Sun",
+    day: "Play",
     title: "Play & rate",
-    body: "Play. Win. Lose. Then rate teammates anonymously — feeds next week's teams.",
+    body: "Play. Win. Lose. Then rate teammates anonymously — it feeds next week's teams.",
   },
 ];
 

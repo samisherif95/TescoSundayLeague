@@ -7,6 +7,8 @@ const { db, sendEmail, sendPushToUsers } = vi.hoisted(() => {
   const db = {
     game: { findUnique: vi.fn(), groupBy: vi.fn(), update: vi.fn() },
     team: { deleteMany: vi.fn(), create: vi.fn() },
+    // Exempt-from-duties members of the game's group (per GroupMember).
+    groupMember: { findMany: vi.fn() },
     // Run the transaction callback against the same mock (acts as `tx`).
     $transaction: vi.fn(async (cb: (tx: unknown) => unknown) => cb(db)),
   };
@@ -36,6 +38,7 @@ function gameWith(
 ) {
   return {
     id: "game1",
+    groupId: "group1",
     status,
     signups: signups.map((s) => ({
       status: SignupStatus.CONFIRMED,
@@ -61,6 +64,7 @@ beforeEach(() => {
   db.game.update.mockResolvedValue({});
   db.team.deleteMany.mockResolvedValue({});
   db.team.create.mockResolvedValue({});
+  db.groupMember.findMany.mockResolvedValue([]); // nobody exempt by default
 });
 
 describe("lockGame guards", () => {
@@ -175,16 +179,15 @@ describe("lockGame happy path", () => {
   });
 
   it("never makes an exempt player the booker", async () => {
-    const seeds: SignupSeed[] = [
-      { id: "exempt", email: "sellaboudy95@gmail.com" },
-      ...confirmed(11),
-    ];
+    const seeds: SignupSeed[] = [{ id: "exempt" }, ...confirmed(11)];
     for (let run = 0; run < 20; run++) {
       vi.clearAllMocks();
       db.game.groupBy.mockResolvedValue([]);
       db.game.update.mockResolvedValue({});
       db.team.deleteMany.mockResolvedValue({});
       db.team.create.mockResolvedValue({});
+      // "exempt" is flagged exempt in this game's group.
+      db.groupMember.findMany.mockResolvedValue([{ userId: "exempt" }]);
       db.game.findUnique.mockResolvedValue(gameWith(seeds));
       const r = await lockGame("game1");
       if (r.ok) {

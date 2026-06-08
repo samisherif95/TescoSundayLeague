@@ -4,15 +4,16 @@ import type { Prisma } from "@/generated/prisma/client";
 import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
 
 /**
- * Returns the most relevant game for the home page:
+ * Returns the most relevant game for the home page, scoped to one group:
  *  - The nearest upcoming OPEN/LOCKED/BOOKED game, or
  *  - The most recent COMPLETED game if no upcoming.
  *
  * Wrapped in React.cache for per-request dedup (Prisma is not auto-memoized).
  */
-export const getCurrentGame = cache(async () => {
+export const getCurrentGame = cache(async (groupId: string) => {
   const upcoming = await prisma.game.findFirst({
     where: {
+      groupId,
       status: {
         in: [GameStatus.OPEN, GameStatus.LOCKED, GameStatus.BOOKED],
       },
@@ -22,13 +23,16 @@ export const getCurrentGame = cache(async () => {
   });
   if (upcoming) return upcoming;
   return prisma.game.findFirst({
-    where: { status: GameStatus.COMPLETED },
+    where: { groupId, status: GameStatus.COMPLETED },
     orderBy: { kickoffAt: "desc" },
     include: gameInclude,
   });
 });
 
 const gameInclude = {
+  group: {
+    select: { id: true, name: true, lockOffsetHours: true },
+  },
   signups: {
     where: { status: { not: SignupStatus.DROPPED_OUT } },
     orderBy: [
@@ -136,15 +140,17 @@ export type GameHistoryItem = Awaited<
 >[number];
 
 /**
- * Completed games for the history list, newest first. Admins see every
- * completed game; everyone else sees only the ones they were signed up for
- * (dropouts excluded).
+ * Completed games for the history list (one group), newest first. Group admins
+ * see every completed game in the group; everyone else sees only the ones they
+ * were signed up for (dropouts excluded).
  */
-export const getGameHistory = cache((userId: string, isAdmin: boolean) => {
+export const getGameHistory = cache(
+  (groupId: string, userId: string, isGroupAdmin: boolean) => {
   return prisma.game.findMany({
     where: {
+      groupId,
       status: GameStatus.COMPLETED,
-      ...(isAdmin
+      ...(isGroupAdmin
         ? {}
         : {
             signups: {

@@ -26,9 +26,9 @@ export type PushPayload = {
 
 /**
  * Send a web-push notification to every device subscribed by the given users.
- * No-ops (with a warning) when VAPID keys aren't configured, so crons and
- * actions never throw just because push isn't set up. Dead endpoints
- * (404/410) are pruned automatically.
+ * No-ops (with a warning) when VAPID keys aren't configured, so server actions
+ * never throw just because push isn't set up. Dead endpoints (404/410) are
+ * pruned automatically.
  */
 export async function sendPushToUsers(
   userIds: string[],

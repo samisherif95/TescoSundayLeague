@@ -77,15 +77,40 @@ async function main() {
   }
   console.log(`  · ${DEMO_USERS.length} users`);
 
-  // 2. Make sure there's an OPEN game for this Sunday
+  // 1b. Demo group — everyone joins it (join key "DEMO"), first user is admin.
+  const group = await prisma.group.upsert({
+    where: { joinKey: "DEMO" },
+    update: {},
+    create: { name: "Demo Sunday League", joinKey: "DEMO" },
+  });
+  const allUsers = await prisma.user.findMany({
+    where: {
+      email: { in: DEMO_USERS.map((u) => `${u.monzo}@demo.sundayleague.app`) },
+    },
+  });
+  const adminEmail = `${DEMO_USERS[0].monzo}@demo.sundayleague.app`;
+  for (const u of allUsers) {
+    await prisma.groupMember.upsert({
+      where: { groupId_userId: { groupId: group.id, userId: u.id } },
+      update: {},
+      create: {
+        groupId: group.id,
+        userId: u.id,
+        role: u.email === adminEmail ? "ADMIN" : "MEMBER",
+      },
+    });
+  }
+  console.log(`  · group "${group.name}" (join key ${group.joinKey})`);
+
+  // 2. Make sure there's an OPEN game for this Sunday in the demo group
   const kickoff = nextSundayNoon();
   const existing = await prisma.game.findFirst({
-    where: { kickoffAt: kickoff },
+    where: { groupId: group.id, kickoffAt: kickoff },
   });
   let game = existing;
   if (!game) {
     game = await prisma.game.create({
-      data: { kickoffAt: kickoff, status: "OPEN" },
+      data: { groupId: group.id, kickoffAt: kickoff, status: "OPEN" },
     });
     console.log(`  · created game for ${kickoff.toDateString()}`);
   } else {

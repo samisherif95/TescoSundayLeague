@@ -13,9 +13,10 @@ export function AdminControls({ hasOpen }: { hasOpen: boolean }) {
     <Card>
       <CardContent className="flex flex-wrap items-center justify-between gap-3 p-5">
         <div>
-          <p className="font-medium">Create next Sunday&apos;s game</p>
+          <p className="font-medium">Create the next game</p>
           <p className="text-sm text-muted-foreground">
-            Opens signups for next Sunday. Do this at the start of the week.
+            Opens signups for your group&apos;s next slot and notifies everyone.
+            Lock, end or cancel it from the game page.
           </p>
         </div>
         <Button

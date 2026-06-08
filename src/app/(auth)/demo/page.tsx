@@ -32,7 +32,7 @@ export default async function DemoPage() {
           </h1>
           <p className="mt-1 text-sm text-muted-foreground">
             Sign in as any of these fake players. The first one is admin so you
-            can play with cron triggers and game editing.
+            can create, lock, end and cancel games.
           </p>
         </div>
       </div>
@@ -55,37 +55,24 @@ export default async function DemoPage() {
       <Card className="mt-6 border-dashed bg-card/40">
         <CardContent className="space-y-3 p-5 text-sm">
           <div className="flex items-center justify-between">
-            <span className="font-semibold">Try the full Friday flow</span>
-            <Badge variant="outline">cron</Badge>
+            <span className="font-semibold">Try the full game flow</span>
+            <Badge variant="outline">admin</Badge>
           </div>
           <p className="text-muted-foreground">
-            Sign in as the admin, then open these in another tab to advance
-            game state:
+            Sign in as the admin, then drive the game from its page:
           </p>
-          <ul className="space-y-1 font-mono text-xs">
+          <ul className="list-disc space-y-1 pl-5 text-xs text-muted-foreground">
             <li>
-              <a
-                className="text-primary hover:underline"
-                href="/api/cron/friday-lock?dev=1"
-                target="_blank"
-                rel="noreferrer"
-              >
-                /api/cron/friday-lock?dev=1
-              </a>
-              <span className="text-muted-foreground">
-                {" "}— locks the game, picks a booker, generates teams
-              </span>
+              <span className="font-medium text-foreground">Lock now</span> —
+              picks a booker, generates teams.
             </li>
             <li>
-              <a
-                className="text-primary hover:underline"
-                href="/api/cron/sunday-complete?dev=1"
-                target="_blank"
-                rel="noreferrer"
-              >
-                /api/cron/sunday-complete?dev=1
-              </a>
-              <span className="text-muted-foreground"> — marks the game COMPLETED so you can rate</span>
+              <span className="font-medium text-foreground">End game</span> —
+              marks it COMPLETED so you can rate teammates.
+            </li>
+            <li>
+              <span className="font-medium text-foreground">Cancel</span> —
+              calls the week off and notifies everyone.
             </li>
           </ul>
         </CardContent>

@@ -1,5 +1,6 @@
 import Link from "next/link";
-import { requireOnboardedUser } from "@/lib/session";
+import { requireActiveGroup } from "@/lib/session";
+import { prisma } from "@/lib/db";
 import { AppHeader } from "@/components/app-header";
 import { BottomNav } from "@/components/bottom-nav";
 
@@ -8,7 +9,16 @@ export default async function AppLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const user = await requireOnboardedUser();
+  // Resolves auth + onboarding (via requireUser) AND the active group; redirects
+  // to /onboarding or the / picker as needed. `isAdmin` is now per-group.
+  const { user, group, membership } = await requireActiveGroup();
+  const isAdmin = membership.role === "ADMIN";
+  const memberships = await prisma.groupMember.findMany({
+    where: { userId: user.id },
+    include: { group: { select: { id: true, name: true } } },
+    orderBy: { joinedAt: "asc" },
+  });
+  const groups = memberships.map((m) => ({ id: m.group.id, name: m.group.name }));
   const isDemo = process.env.DEMO_MODE === "1";
   return (
     <>
@@ -18,14 +28,16 @@ export default async function AppLayout({
           id: user.id,
           name: user.name,
           image: user.image,
-          isAdmin: user.isAdmin,
+          isAdmin,
         }}
+        group={{ id: group.id, name: group.name }}
+        groups={groups}
         isDemo={isDemo}
       />
       <div className="flex-1 pb-[calc(5.5rem+env(safe-area-inset-bottom))] md:pb-12">
         {children}
       </div>
-      <BottomNav isAdmin={user.isAdmin} />
+      <BottomNav isAdmin={isAdmin} />
     </>
   );
 }

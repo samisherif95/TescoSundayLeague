@@ -14,9 +14,8 @@ export type CancelResult =
  * COMPLETED or CANCELLED returns a clear error instead of re-notifying.
  *
  * Notifications are best-effort: a flaky SMTP/push send never rolls back the
- * cancellation (the status flip is already committed). Unlike the (disabled)
- * Friday cron, this does NOT roll forward to next Sunday — an admin opens the
- * next game by hand.
+ * cancellation (the status flip is already committed). Cancelling does NOT roll
+ * forward — an admin opens the next game by hand from the admin page.
  */
 export async function cancelGame(gameId: string): Promise<CancelResult> {
   const game = await prisma.game.findUnique({

@@ -13,6 +13,7 @@
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
     "db:backfill-verified": "tsx prisma/backfill-email-verified.ts",
+    "db:backfill-groups": "tsx prisma/backfill-multi-group.ts",
     "dev:demo": "mkdir -p ./.pglite/demo && pglite-server -p 5433 -d ./.pglite/demo -m 20 -r 'npm run dev:demo:inner'",
     "dev:demo:inner": "DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5433/postgres?sslmode=disable' npm run db:push && DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5433/postgres?sslmode=disable' npm run db:seed && DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5433/postgres?sslmode=disable' DEMO_MODE=1 next dev"
   },

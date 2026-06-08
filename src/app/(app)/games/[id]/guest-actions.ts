@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
-import { requireAdmin, requireOnboardedUser } from "@/lib/session";
+import { requireGameAdmin, requireGameMember } from "@/lib/session";
 import { MAX_PLAYERS, isSignupOpen } from "@/lib/game";
 
 const gameIdSchema = z.object({ gameId: z.string().min(1) });
@@ -18,8 +18,8 @@ export async function setAllowGuestsAction(
   gameId: string,
   allow: boolean,
 ): Promise<{ ok: true } | { error: string }> {
-  await requireAdmin();
   if (!gameId) return { error: "Missing game id" };
+  await requireGameAdmin(gameId);
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) return { error: "Game not found" };
   if (game.status !== GameStatus.OPEN) {
@@ -42,14 +42,15 @@ export async function setAllowGuestsAction(
 export async function addGuestAction(
   formData: FormData,
 ): Promise<{ ok: true } | { error: string }> {
-  const user = await requireOnboardedUser();
   const parsed = gameIdSchema.safeParse({ gameId: formData.get("gameId") });
   if (!parsed.success) return { error: "Invalid input" };
   const { gameId } = parsed.data;
+  const { user } = await requireGameMember(gameId);
 
   const game = await prisma.game.findUnique({
     where: { id: gameId },
     include: {
+      group: { select: { lockOffsetHours: true } },
       _count: {
         select: {
           signups: { where: { status: SignupStatus.CONFIRMED } },
@@ -59,7 +60,10 @@ export async function addGuestAction(
     },
   });
   if (!game) return { error: "Game not found" };
-  if (game.status !== GameStatus.OPEN || !isSignupOpen(game)) {
+  if (
+    game.status !== GameStatus.OPEN ||
+    !isSignupOpen(game, game.group?.lockOffsetHours)
+  ) {
     return { error: "Signups have closed for this game" };
   }
   if (!game.allowGuests) {
@@ -92,7 +96,6 @@ export async function addGuestAction(
 export async function removeGuestAction(
   guestId: string,
 ): Promise<{ ok: true } | { error: string }> {
-  const user = await requireOnboardedUser();
   if (!guestId) return { error: "Missing guest id" };
 
   const guest = await prisma.guest.findUnique({
@@ -100,7 +103,8 @@ export async function removeGuestAction(
     include: { game: { select: { id: true, status: true } } },
   });
   if (!guest) return { error: "Guest not found" };
-  if (guest.hostUserId !== user.id && !user.isAdmin) {
+  const { user, membership } = await requireGameMember(guest.game.id);
+  if (guest.hostUserId !== user.id && membership.role !== "ADMIN") {
     return { error: "You can only remove a +1 you added" };
   }
   if (guest.game.status !== GameStatus.OPEN) {

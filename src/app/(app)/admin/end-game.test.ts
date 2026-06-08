@@ -9,7 +9,7 @@ const { db, requireAdmin, sendEmail } = vi.hoisted(() => ({
   sendEmail: vi.fn(),
 }));
 vi.mock("@/lib/db", () => ({ prisma: db }));
-vi.mock("@/lib/session", () => ({ requireAdmin }));
+vi.mock("@/lib/session", () => ({ requireGameAdmin: requireAdmin }));
 vi.mock("@/lib/email", () => ({ sendEmail }));
 // completeGame generates the payment split on completion — stubbed here so the
 // status + rating-email behaviour is tested in isolation (split maths lives in

@@ -10,6 +10,8 @@ import {
   generatePaymentLink,
   monzoDescription,
   nextSundayNoon,
+  nextKickoff,
+  lockDeadline,
   signupDeadline,
   isSignupOpen,
   londonParts,
@@ -88,6 +90,81 @@ describe("nextSundayNoon", () => {
     const from = new Date("2026-03-24T09:00:00.000Z"); // Tue 24 Mar
     expect(nextSundayNoon(from).toISOString()).toBe(
       "2026-03-29T11:00:00.000Z",
+    );
+  });
+});
+
+describe("nextKickoff", () => {
+  it("matches nextSundayNoon for the legacy Sunday-noon London schedule", () => {
+    const from = new Date("2026-06-01T09:00:00.000Z");
+    const legacy = {
+      kickoffWeekday: 0,
+      kickoffHour: 12,
+      kickoffMinute: 0,
+      timezone: "Europe/London",
+    };
+    expect(nextKickoff(legacy, from).toISOString()).toBe(
+      nextSundayNoon(from).toISOString(),
+    );
+  });
+
+  it("handles a non-Sunday weekday and non-noon time", () => {
+    // Wednesday 19:30 London, from a Monday in summer → Wed 3 Jun 19:30 BST.
+    const from = new Date("2026-06-01T09:00:00.000Z");
+    const wed = {
+      kickoffWeekday: 3,
+      kickoffHour: 19,
+      kickoffMinute: 30,
+      timezone: "Europe/London",
+    };
+    expect(nextKickoff(wed, from).toISOString()).toBe(
+      "2026-06-03T18:30:00.000Z",
+    );
+  });
+
+  it("respects a different timezone (New York Saturday noon)", () => {
+    // Sat noon America/New_York (EDT, UTC-4 in June) → 16:00 UTC.
+    const from = new Date("2026-06-01T09:00:00.000Z");
+    const ny = {
+      kickoffWeekday: 6,
+      kickoffHour: 12,
+      kickoffMinute: 0,
+      timezone: "America/New_York",
+    };
+    expect(nextKickoff(ny, from).toISOString()).toBe(
+      "2026-06-06T16:00:00.000Z",
+    );
+  });
+
+  it("rolls to next week when called on the kickoff weekday", () => {
+    const sunday = new Date("2026-06-07T08:00:00.000Z");
+    const legacy = {
+      kickoffWeekday: 0,
+      kickoffHour: 12,
+      kickoffMinute: 0,
+      timezone: "Europe/London",
+    };
+    expect(nextKickoff(legacy, sunday).toISOString()).toBe(
+      "2026-06-14T11:00:00.000Z",
+    );
+  });
+});
+
+describe("lockDeadline", () => {
+  it("subtracts the offset hours from kickoff", () => {
+    const kickoff = new Date("2026-06-07T11:00:00.000Z");
+    expect(lockDeadline(kickoff, 42).toISOString()).toBe(
+      "2026-06-05T17:00:00.000Z",
+    );
+    expect(lockDeadline(kickoff, 24).toISOString()).toBe(
+      "2026-06-06T11:00:00.000Z",
+    );
+  });
+
+  it("defaults to the legacy 42h offset", () => {
+    const kickoff = new Date("2026-06-07T11:00:00.000Z");
+    expect(lockDeadline(kickoff).toISOString()).toBe(
+      "2026-06-05T17:00:00.000Z",
     );
   });
 });
@@ -310,24 +387,27 @@ describe("monzoDescription", () => {
 describe("isSignupOpen", () => {
   const kickoff = new Date("2026-06-07T11:00:00.000Z");
 
+  // 42h before the Sunday-noon kickoff is the default lock deadline (≈Fri 18:00).
+  const LOCK = 42;
+
   it("is open while OPEN and before the Friday deadline", () => {
     const now = new Date("2026-06-04T12:00:00.000Z");
-    expect(isSignupOpen({ status: GameStatus.OPEN, kickoffAt: kickoff }, now)).toBe(
-      true,
-    );
+    expect(
+      isSignupOpen({ status: GameStatus.OPEN, kickoffAt: kickoff }, LOCK, now),
+    ).toBe(true);
   });
 
   it("is closed after the deadline", () => {
     const now = new Date("2026-06-05T17:30:00.000Z"); // past 18:00 BST deadline
-    expect(isSignupOpen({ status: GameStatus.OPEN, kickoffAt: kickoff }, now)).toBe(
-      false,
-    );
+    expect(
+      isSignupOpen({ status: GameStatus.OPEN, kickoffAt: kickoff }, LOCK, now),
+    ).toBe(false);
   });
 
   it("is closed once the game is no longer OPEN", () => {
     const now = new Date("2026-06-04T12:00:00.000Z");
     expect(
-      isSignupOpen({ status: GameStatus.LOCKED, kickoffAt: kickoff }, now),
+      isSignupOpen({ status: GameStatus.LOCKED, kickoffAt: kickoff }, LOCK, now),
     ).toBe(false);
   });
 });
