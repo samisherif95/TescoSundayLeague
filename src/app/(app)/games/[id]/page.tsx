@@ -274,10 +274,12 @@ export default async function GameDetailPage({
         <Card>
           <CardContent className="p-5">
             <p className="text-sm">
-              Pitch is booked. Share the payment links with the group.
+              Pitch is booked and the cost is recorded. Payment links go out to
+              the squad once an admin ends the game — so any no-shows can be
+              dropped first and the split stays correct.
             </p>
             <Button asChild className="mt-3" variant="outline">
-              <Link href={`/games/${game.id}/book`}>View payment requests</Link>
+              <Link href={`/games/${game.id}/book`}>Edit the pitch cost</Link>
             </Button>
           </CardContent>
         </Card>
@@ -405,8 +407,11 @@ export default async function GameDetailPage({
         />
       )}
 
-      {game.paymentRequests.length > 0 &&
-        (mySignup?.status === SignupStatus.CONFIRMED || isBooker) && (
+      {game.status === GameStatus.COMPLETED &&
+        game.paymentRequests.length > 0 &&
+        (mySignup?.status === SignupStatus.CONFIRMED ||
+          isBooker ||
+          user.isAdmin) && (
           <section className="space-y-3">
             <h2 className="text-lg font-semibold">
               <Wallet className="mr-2 inline h-5 w-5" />
@@ -415,11 +420,25 @@ export default async function GameDetailPage({
             <p className="text-sm text-muted-foreground">
               Everyone marks their own payment once they&apos;ve sent it — so we
               can all see who still owes.
+              {isBooker && (
+                <>
+                  {" "}
+                  Wrong total?{" "}
+                  <Link
+                    href={`/games/${game.id}/book`}
+                    className="underline underline-offset-2"
+                  >
+                    Edit the pitch cost
+                  </Link>
+                  .
+                </>
+              )}
             </p>
             <PaymentsPanel
               gameId={game.id}
               currentUserId={user.id}
               isBooker={isBooker}
+              isAdmin={user.isAdmin}
               bookerName={game.booker?.name ?? null}
               rows={game.paymentRequests.map((p) => ({
                 id: p.id,
@@ -432,6 +451,24 @@ export default async function GameDetailPage({
               }))}
             />
           </section>
+        )}
+
+      {game.status === GameStatus.COMPLETED &&
+        game.paymentRequests.length === 0 &&
+        isBooker && (
+          <Card className="border-amber-500/40 bg-amber-500/5">
+            <CardContent className="space-y-3 p-5">
+              <p className="font-semibold">Enter the pitch cost</p>
+              <p className="text-sm text-muted-foreground">
+                The game&apos;s ended but the cost isn&apos;t in yet, so no
+                payment links have gone out. Add it and the split is generated
+                for the squad.
+              </p>
+              <Button asChild>
+                <Link href={`/games/${game.id}/book`}>Enter pitch cost</Link>
+              </Button>
+            </CardContent>
+          </Card>
         )}
     </main>
   );

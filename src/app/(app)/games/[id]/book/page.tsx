@@ -2,7 +2,6 @@ import { notFound, redirect } from "next/navigation";
 import { ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { getGameWithDetail } from "@/lib/games-queries";
 import { requireOnboardedUser } from "@/lib/session";
 import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
@@ -20,7 +19,8 @@ export default async function BookPage({
   if (game.bookerId !== user.id) redirect(`/games/${game.id}`);
   if (
     game.status !== GameStatus.LOCKED &&
-    game.status !== GameStatus.BOOKED
+    game.status !== GameStatus.BOOKED &&
+    game.status !== GameStatus.COMPLETED
   ) {
     redirect(`/games/${game.id}`);
   }
@@ -74,8 +74,10 @@ export default async function BookPage({
         </CardHeader>
         <CardContent>
           <p className="mb-4 text-sm text-muted-foreground">
-            Cost will be split evenly across {confirmedCount} confirmed players.
-            Monzo links are generated for everyone except you.
+            Enter what you paid for the pitch. It&apos;ll be split evenly across
+            the {confirmedCount} confirmed players. Payment links are generated
+            and shared with the squad once an admin ends the game — so any
+            no-shows can be dropped first and the split stays right.
           </p>
           <BookingForm
             gameId={game.id}
@@ -85,41 +87,19 @@ export default async function BookPage({
         </CardContent>
       </Card>
 
-      {game.paymentRequests.length > 0 && (
-        <Card>
-          <CardHeader>
-            <CardTitle>3. Share with the group</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            {game.paymentRequests.map((p) => (
-              <div
-                key={p.id}
-                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-card p-3"
-              >
-                <div className="text-sm">
-                  <div className="font-medium">{p.debtor.name}</div>
-                  <div className="text-muted-foreground">
-                    £{(p.amountPence / 100).toFixed(2)}
-                  </div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline">
-                    {p.paidStatus === "MARKED_PAID" ? "Paid" : "Unpaid"}
-                  </Badge>
-                  <Button asChild size="sm" variant="outline">
-                    <a href={p.paymentLink} target="_blank" rel="noreferrer">
-                      Open link
-                    </a>
-                  </Button>
-                </div>
-              </div>
-            ))}
-            <p className="pt-2 text-xs text-muted-foreground">
-              Tip: long-press a link to copy, then drop into WhatsApp.
-            </p>
-          </CardContent>
-        </Card>
-      )}
+      <Card>
+        <CardHeader>
+          <CardTitle>3. Payment links</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-muted-foreground">
+            Once an admin ends the game, the split is generated from who actually
+            played and the payment links appear on the game page for the whole
+            squad — you&apos;ll be able to see who&apos;s paid and nudge anyone
+            who hasn&apos;t.
+          </p>
+        </CardContent>
+      </Card>
     </main>
   );
 }
