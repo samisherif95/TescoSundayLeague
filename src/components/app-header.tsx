@@ -53,6 +53,7 @@ export function AppHeader({ user, group, groups, isDemo }: Props) {
         <nav className="hidden items-center gap-1 md:flex">
           <NavLink href="/home" label="This week" />
           <NavLink href="/games" label="History" />
+          <NavLink href="/leaderboard" label="Leaderboard" />
           <NavLink href="/profile" label="Profile" />
           {user.isAdmin && <NavLink href="/admin" label="Admin" />}
         </nav>
