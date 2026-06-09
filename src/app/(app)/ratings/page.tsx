@@ -1,0 +1,160 @@
+import { Star } from "lucide-react";
+import { Card, CardContent } from "@/components/ui/card";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
+import { getGroupRatingMembers } from "@/lib/games-queries";
+import { buildRatingsBoard, type RatingEntry } from "@/lib/ratings";
+import { requireActiveGroup } from "@/lib/session";
+import { cn } from "@/lib/utils";
+import type { Position } from "@/generated/prisma/enums";
+
+const POSITION_COLOR: Record<Position, string> = {
+  DEF: "bg-sky-500/15 text-sky-700 dark:text-sky-300 border-sky-500/30",
+  MID: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border-emerald-500/30",
+  FWD: "bg-rose-500/15 text-rose-700 dark:text-rose-300 border-rose-500/30",
+};
+
+export default async function RatingsPage() {
+  const { group } = await requireActiveGroup();
+  const members = await getGroupRatingMembers(group.id);
+  const board = buildRatingsBoard(
+    members.map((m) => ({
+      id: m.user.id,
+      name: m.user.name,
+      image: m.user.image,
+      position: m.user.preferredPosition,
+      skillScore: m.user.skillScore,
+      ratingsCount: m.user._count.ratingsReceived,
+    })),
+  );
+
+  return (
+    <main className="mx-auto max-w-3xl space-y-6 px-4 py-6">
+      <header className="space-y-1">
+        <h1 className="text-2xl font-semibold tracking-tight">
+          Player ratings
+        </h1>
+        <p className="text-sm text-muted-foreground">
+          Everyone in {group.name}, ranked by the average rating their teammates
+          have given them. Play well — your team is watching.
+        </p>
+      </header>
+
+      {board.length === 0 ? (
+        <div className="rounded-2xl border bg-card p-10 text-center">
+          <div className="mx-auto mb-5 inline-flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+            <Star className="size-6" />
+          </div>
+          <h2 className="font-display text-xl font-semibold tracking-tight">
+            No players yet
+          </h2>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Once members join and rate each other after games, the ratings show
+            up here.
+          </p>
+        </div>
+      ) : (
+        <Card>
+          <CardContent className="divide-y p-0">
+            {board.map((entry) => (
+              <Row key={entry.id} entry={entry} />
+            ))}
+          </CardContent>
+        </Card>
+      )}
+    </main>
+  );
+}
+
+function Row({ entry }: { entry: RatingEntry }) {
+  const initial = (entry.name ?? "?").slice(0, 1).toUpperCase();
+  const rated = entry.ratingsCount > 0;
+  return (
+    <div className="flex items-center gap-3 px-4 py-3">
+      <RankBadge rank={entry.rank} />
+      <Avatar className="size-9">
+        <AvatarImage src={entry.image ?? undefined} alt="" />
+        <AvatarFallback>{initial}</AvatarFallback>
+      </Avatar>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate font-medium">{entry.name}</span>
+          {entry.position && (
+            <Badge
+              variant="outline"
+              className={cn(
+                "text-[10px] font-semibold",
+                POSITION_COLOR[entry.position],
+              )}
+            >
+              {entry.position}
+            </Badge>
+          )}
+        </div>
+        {rated ? (
+          <StarMeter score={entry.score} />
+        ) : (
+          <span className="text-xs text-muted-foreground">Not yet rated</span>
+        )}
+      </div>
+      {rated && (
+        <div className="text-right">
+          <div className="text-lg font-semibold tabular-nums">
+            {entry.score.toFixed(1)}
+          </div>
+          <div className="text-[11px] text-muted-foreground">
+            {entry.ratingsCount}{" "}
+            {entry.ratingsCount === 1 ? "rating" : "ratings"}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** Five small stars filled up to the rounded score, for an at-a-glance read. */
+function StarMeter({ score }: { score: number }) {
+  const filled = Math.round(score);
+  return (
+    <div
+      className="mt-0.5 flex items-center gap-0.5"
+      aria-label={`${score.toFixed(1)} out of 5`}
+    >
+      {[1, 2, 3, 4, 5].map((n) => (
+        <Star
+          key={n}
+          className={cn(
+            "size-3.5",
+            n <= filled
+              ? "fill-amber-400 stroke-amber-500"
+              : "stroke-muted-foreground/40",
+          )}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Medal tones for the podium (ranks 1–3); everyone else gets a plain number,
+// and unrated players (rank null) get a neutral dash.
+const MEDAL: Record<number, string> = {
+  1: "border-amber-500/40 bg-amber-500/15 text-amber-700 dark:text-amber-300",
+  2: "border-slate-400/40 bg-slate-400/15 text-slate-600 dark:text-slate-300",
+  3: "border-orange-600/40 bg-orange-600/15 text-orange-700 dark:text-orange-400",
+};
+
+function RankBadge({ rank }: { rank: number | null }) {
+  return (
+    <div
+      className={cn(
+        "inline-flex size-7 shrink-0 items-center justify-center rounded-full border text-sm font-semibold tabular-nums",
+        rank ? MEDAL[rank] : null,
+        !rank || !MEDAL[rank]
+          ? "border-border bg-muted text-muted-foreground"
+          : null,
+      )}
+    >
+      {rank ?? "–"}
+    </div>
+  );
+}
