@@ -165,3 +165,23 @@ export const getGameHistory = cache(
     include: historyInclude,
   });
 });
+
+/**
+ * Every credited, non-own goal scored across a group's COMPLETED games — the
+ * raw rows the leaderboard ranks (see `buildLeaderboard`). Own goals and
+ * anonymous goals are filtered in SQL so we only ship rows that can be tallied.
+ */
+export const getGroupScorerGoals = cache((groupId: string) => {
+  return prisma.goal.findMany({
+    where: {
+      isOwnGoal: false,
+      scorerId: { not: null },
+      match: { game: { groupId, status: GameStatus.COMPLETED } },
+    },
+    select: {
+      scorerId: true,
+      isOwnGoal: true,
+      scorer: { select: { id: true, name: true, image: true } },
+    },
+  });
+});
