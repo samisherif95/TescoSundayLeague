@@ -13,6 +13,19 @@ function transport(): Transporter | null {
     // Omit auth entirely for relays that don't require it (e.g. a local
     // dev MailHog). Most providers (Gmail, SES, Mailgun) will set both.
     auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+    // Bulk notifications (new game, lock, cancel, complete) fan out one
+    // sendEmail() per member *concurrently*. Without pooling, nodemailer
+    // opens a fresh connection for every message, so a group blast briefly
+    // holds N simultaneous connections — and every provider caps concurrent
+    // connections per account (Gmail especially). The surplus gets rejected
+    // ("421 Too many concurrent connections") and those members silently miss
+    // out. Pooling reuses a small, bounded set of connections and queues the
+    // rest, and the rate limit keeps us under per-second send caps too.
+    pool: true,
+    maxConnections: 3,
+    maxMessages: Infinity,
+    rateDelta: 1000,
+    rateLimit: 10,
   });
   return _transport;
 }
@@ -27,10 +40,22 @@ export async function sendEmail(opts: {
     console.warn("SMTP not configured — email not sent:", opts.subject);
     return null;
   }
-  return t.sendMail({
-    from: env.emailFrom,
-    to: opts.to,
-    subject: opts.subject,
-    html: opts.html,
-  });
+  try {
+    return await t.sendMail({
+      from: env.emailFrom,
+      to: opts.to,
+      subject: opts.subject,
+      html: opts.html,
+    });
+  } catch (err) {
+    // Bulk senders wrap each call in Promise.allSettled, so a rejection here
+    // is otherwise swallowed with no trace — leaving "some people didn't get
+    // the email" impossible to diagnose. Log who/what failed, then rethrow so
+    // direct awaiters (password reset, verification) still surface the error.
+    console.error(
+      `Failed to send email "${opts.subject}" to ${String(opts.to)}:`,
+      err,
+    );
+    throw err;
+  }
 }
