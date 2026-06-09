@@ -50,8 +50,8 @@ export async function openWeeklyGame(
 
   await Promise.allSettled(
     users
-      .filter((u): u is { id: string; email: string; name: string } =>
-        Boolean(u.email && u.name),
+      .filter((u): u is { id: string; email: string; name: string | null } =>
+        Boolean(u.email),
       )
       .map((u) =>
         sendEmail({
