@@ -54,6 +54,7 @@ export function AppHeader({ user, group, groups, isDemo }: Props) {
           <NavLink href="/home" label="This week" />
           <NavLink href="/games" label="History" />
           <NavLink href="/leaderboard" label="Leaderboard" />
+          <NavLink href="/ratings" label="Ratings" />
           <NavLink href="/profile" label="Profile" />
           {user.isAdmin && <NavLink href="/admin" label="Admin" />}
         </nav>

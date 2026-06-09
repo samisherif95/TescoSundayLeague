@@ -185,3 +185,27 @@ export const getGroupScorerGoals = cache((groupId: string) => {
     },
   });
 });
+
+/**
+ * Every member of a group with their current peer rating (`skillScore`) and how
+ * many ratings it's built from — the rows the ratings board ranks (see
+ * `buildRatingsBoard`). `ratingsReceived` is counted, never listed, so no
+ * individual rater is exposed.
+ */
+export const getGroupRatingMembers = cache((groupId: string) => {
+  return prisma.groupMember.findMany({
+    where: { groupId },
+    select: {
+      user: {
+        select: {
+          id: true,
+          name: true,
+          image: true,
+          preferredPosition: true,
+          skillScore: true,
+          _count: { select: { ratingsReceived: true } },
+        },
+      },
+    },
+  });
+});
