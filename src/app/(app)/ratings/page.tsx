@@ -1,9 +1,11 @@
-import { Star } from "lucide-react";
+import Link from "next/link";
+import { ShieldCheck, Star } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { getGroupRatingMembers } from "@/lib/games-queries";
 import { buildRatingsBoard, type RatingEntry } from "@/lib/ratings";
+import { canViewRatingsAudit } from "@/lib/ratings-audit";
 import { requireActiveGroup } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import type { Position } from "@/generated/prisma/enums";
@@ -15,7 +17,7 @@ const POSITION_COLOR: Record<Position, string> = {
 };
 
 export default async function RatingsPage() {
-  const { group } = await requireActiveGroup();
+  const { user, group } = await requireActiveGroup();
   const members = await getGroupRatingMembers(group.id);
   const board = buildRatingsBoard(
     members.map((m) => ({
@@ -31,9 +33,20 @@ export default async function RatingsPage() {
   return (
     <main className="mx-auto max-w-3xl space-y-6 px-4 py-6">
       <header className="space-y-1">
-        <h1 className="text-2xl font-semibold tracking-tight">
-          Player ratings
-        </h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-2xl font-semibold tracking-tight">
+            Player ratings
+          </h1>
+          {canViewRatingsAudit(user.email) && (
+            <Link
+              href="/ratings/audit"
+              className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+            >
+              <ShieldCheck className="size-3.5" />
+              Audit
+            </Link>
+          )}
+        </div>
         <p className="text-sm text-muted-foreground">
           Everyone in {group.name}, ranked by the average rating their teammates
           have given them. Play well — your team is watching.

@@ -209,3 +209,27 @@ export const getGroupRatingMembers = cache((groupId: string) => {
     },
   });
 });
+
+/**
+ * Every COMPLETED game in a group with its full rating rows — rater INCLUDED.
+ * This deliberately breaches the "raterId is never exposed" rule and must only
+ * ever feed the owner-gated audit page (see `canViewRatingsAudit`); never call
+ * it from a member-facing route.
+ */
+export const getGroupRatingsAudit = cache((groupId: string) => {
+  return prisma.game.findMany({
+    where: { groupId, status: GameStatus.COMPLETED },
+    orderBy: { kickoffAt: "desc" },
+    select: {
+      id: true,
+      kickoffAt: true,
+      ratings: {
+        select: {
+          score: true,
+          rater: { select: { id: true, name: true, image: true } },
+          ratee: { select: { id: true, name: true, image: true } },
+        },
+      },
+    },
+  });
+});

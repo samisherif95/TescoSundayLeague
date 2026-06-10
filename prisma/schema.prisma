@@ -309,8 +309,9 @@ model Guest {
   @@index([hostUserId])
 }
 
-// IMPORTANT: raterId is NEVER returned in any API response.
-// Used server-side only to enforce one-rating-per-pair-per-game.
+// IMPORTANT: raterId is NEVER shown to regular members — it exists server-side
+// to enforce one-rating-per-pair-per-game. The single exception is the
+// owner-gated /ratings/audit page (see src/lib/ratings-audit.ts).
 model Rating {
   id        String   @id @default(cuid())
   gameId    String
