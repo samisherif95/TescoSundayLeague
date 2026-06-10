@@ -3,6 +3,7 @@ import { requireActiveGroup } from "@/lib/session";
 import { prisma } from "@/lib/db";
 import { AppHeader } from "@/components/app-header";
 import { BottomNav } from "@/components/bottom-nav";
+import { PushSync } from "@/components/push-sync";
 
 export default async function AppLayout({
   children,
@@ -22,6 +23,7 @@ export default async function AppLayout({
   const isDemo = process.env.DEMO_MODE === "1";
   return (
     <>
+      <PushSync />
       {isDemo && <DemoBanner name={user.name ?? "demo user"} />}
       <AppHeader
         user={{
