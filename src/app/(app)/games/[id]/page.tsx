@@ -18,7 +18,11 @@ import {
   londonInputValue,
 } from "@/lib/game";
 import { deriveScore } from "@/lib/match";
-import { SignupControls } from "./_signup-controls";
+import {
+  SignupControls,
+  DropOutCard,
+  RemovePlayerButton,
+} from "./_signup-controls";
 import { PaymentsPanel } from "./_payments-panel";
 import { MatchDay } from "./_match-day";
 import { TeamsEditor } from "./_teams-editor";
@@ -308,6 +312,10 @@ export default async function GameDetailPage({
         </Card>
       )}
 
+      {game.status === GameStatus.LOCKED && amConfirmed && (
+        <DropOutCard gameId={game.id} />
+      )}
+
       {game.status === GameStatus.COMPLETED && mySignup && (
         <Card>
           <CardContent className="flex items-center justify-between p-5">
@@ -347,6 +355,15 @@ export default async function GameDetailPage({
               name={s.user.name}
               image={s.user.image}
               position={s.position}
+              trailing={
+                isAdmin && s.user.id !== user.id ? (
+                  <RemovePlayerButton
+                    gameId={game.id}
+                    userId={s.user.id}
+                    name={s.user.name}
+                  />
+                ) : undefined
+              }
             />
           ))}
           {guests.map((g) => (
@@ -384,8 +401,17 @@ export default async function GameDetailPage({
                 image={s.user.image}
                 position={s.position}
                 trailing={
-                  <span className="text-xs text-muted-foreground">
-                    #{s.waitlistPosition}
+                  <span className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      #{s.waitlistPosition}
+                    </span>
+                    {isAdmin && (
+                      <RemovePlayerButton
+                        gameId={game.id}
+                        userId={s.user.id}
+                        name={s.user.name}
+                      />
+                    )}
                   </span>
                 }
               />

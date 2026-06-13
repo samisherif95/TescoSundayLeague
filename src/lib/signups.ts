@@ -3,6 +3,7 @@ import {
   GameStatus,
   Position,
   SignupStatus,
+  TeamLabel,
 } from "@/generated/prisma/enums";
 import {
   GUEST_SKILL_SCORE,
@@ -238,6 +239,12 @@ export async function joinGame(
 export type LeaveOutcome = {
   /** Waitlister promoted into the freed CONFIRMED spot, if any. */
   promotedUserId: string | null;
+  /**
+   * The team the promoted waitlister was slotted straight into — i.e. the team
+   * the dropped player held on a LOCKED game. Null when there were no teams yet
+   * (OPEN game) or no one was promoted.
+   */
+  promotedTeamLabel: TeamLabel | null;
   /** Teams were wiped + rebuilt (happens for LOCKED games still ≥10). */
   teamsRegenerated: boolean;
   /** New booker chosen because the booker dropped out (LOCKED only). */
@@ -255,12 +262,19 @@ export type LeaveOutcome = {
 /**
  * Drop a user out of a game. Behaviour depends on the game's status:
  *  - OPEN: promote the first waitlister (as before); nothing else to do.
- *  - LOCKED: promote a waitlister, then either regenerate teams (and re-pick
- *    the booker if the leaver was the booker) when ≥10 remain, or revert the
- *    game to OPEN (clearing booker + teams) when it drops below 10.
+ *  - LOCKED: promote a waitlister, then re-pick any duty (booker/bibs/football)
+ *    whose holder dropped. If a waitlister was promoted they slot straight into
+ *    the dropped player's exact team — everyone else's team is left untouched.
+ *    If no one was waiting, the remaining squad is rebalanced into fresh teams.
+ *    Dropping below the minimum reverts the game to OPEN (clearing booker +
+ *    teams).
  *  - BOOKED: the money's already split, so don't touch teams/booker/payments —
  *    just record the drop-out and promote a waitlister (the booker reconciles
  *    any cash with them informally).
+ *  - COMPLETED / CANCELLED: the game's already done, so just record the
+ *    drop-out — nobody is promoted into a finished game.
+ *
+ * Works the same whether a player drops themselves or an admin removes them.
  */
 export async function leaveGame(
   gameId: string,
@@ -274,6 +288,7 @@ export async function leaveGame(
     if (!game || !signup || signup.status === SignupStatus.DROPPED_OUT) {
       return {
         promotedUserId: null,
+        promotedTeamLabel: null,
         teamsRegenerated: false,
         newBookerId: null,
         newBibsUserId: null,
@@ -292,8 +307,16 @@ export async function leaveGame(
     // makes no sense, and they shouldn't keep propping up the head count.
     await tx.guest.deleteMany({ where: { gameId, hostUserId: userId } });
 
+    // Only fill the freed spot from the waitlist while the game is still live —
+    // never promote someone into a finished (COMPLETED/CANCELLED) game.
+    const canPromote =
+      wasConfirmed &&
+      (game.status === GameStatus.OPEN ||
+        game.status === GameStatus.LOCKED ||
+        game.status === GameStatus.BOOKED);
+
     let promotedUserId: string | null = null;
-    if (wasConfirmed) {
+    if (canPromote) {
       const top = await tx.signup.findFirst({
         where: { gameId, status: SignupStatus.WAITLIST },
         orderBy: { waitlistPosition: "asc" },
@@ -304,21 +327,27 @@ export async function leaveGame(
           data: { status: SignupStatus.CONFIRMED, waitlistPosition: null },
         });
         promotedUserId = top.userId;
-        // re-number remaining waitlist
-        const remaining = await tx.signup.findMany({
-          where: { gameId, status: SignupStatus.WAITLIST },
-          orderBy: { waitlistPosition: "asc" },
+      }
+    }
+
+    // Re-number the remaining waitlist after the drop — whether we pulled #1 off
+    // it (a promotion) or removed a waitlister outright — so positions stay 1..n
+    // with no gaps.
+    const remaining = await tx.signup.findMany({
+      where: { gameId, status: SignupStatus.WAITLIST },
+      orderBy: { waitlistPosition: "asc" },
+    });
+    for (let i = 0; i < remaining.length; i++) {
+      if (remaining[i].waitlistPosition !== i + 1) {
+        await tx.signup.update({
+          where: { id: remaining[i].id },
+          data: { waitlistPosition: i + 1 },
         });
-        for (let i = 0; i < remaining.length; i++) {
-          await tx.signup.update({
-            where: { id: remaining[i].id },
-            data: { waitlistPosition: i + 1 },
-          });
-        }
       }
     }
 
     let teamsRegenerated = false;
+    let promotedTeamLabel: TeamLabel | null = null;
     let newBookerId: string | null = null;
     let newBibsUserId: string | null = null;
     let newFootballUserId: string | null = null;
@@ -367,8 +396,33 @@ export async function leaveGame(
             footballUserId: footballId,
           },
         });
-        await regenerateTeams(tx, gameId);
-        teamsRegenerated = true;
+
+        if (promotedUserId) {
+          // Slot the promoted waitlister straight into the dropped player's
+          // existing team spot. The teams were already generated at lock time
+          // and the rest of the squad has seen them, so we swap one slot in
+          // place rather than re-shuffling everyone.
+          const slot = await tx.teamPlayer.findFirst({
+            where: { userId, team: { gameId } },
+            include: { team: { select: { label: true } } },
+          });
+          if (slot) {
+            await tx.teamPlayer.update({
+              where: { id: slot.id },
+              data: { userId: promotedUserId },
+            });
+            promotedTeamLabel = slot.team.label;
+          } else {
+            // Defensive: the dropped player somehow had no team slot — fall back
+            // to a full rebuild so the promoted player is still placed.
+            await regenerateTeams(tx, gameId);
+            teamsRegenerated = true;
+          }
+        } else {
+          // No one waiting to take the spot — rebalance the remaining squad.
+          await regenerateTeams(tx, gameId);
+          teamsRegenerated = true;
+        }
       } else {
         // Not enough players to lock anymore — reopen signups.
         await tx.team.deleteMany({ where: { gameId } });
@@ -388,6 +442,7 @@ export async function leaveGame(
 
     return {
       promotedUserId,
+      promotedTeamLabel,
       teamsRegenerated,
       newBookerId,
       newBibsUserId,
