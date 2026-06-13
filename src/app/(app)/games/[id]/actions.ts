@@ -8,11 +8,15 @@ import {
   SignupStatus,
 } from "@/generated/prisma/enums";
 import { prisma } from "@/lib/db";
-import { requireOnboardedUser, requireGameMember } from "@/lib/session";
+import {
+  requireOnboardedUser,
+  requireGameMember,
+  requireGameAdmin,
+} from "@/lib/session";
 import { joinGame, leaveGame } from "@/lib/signups";
+import { notifyLeaveOutcome } from "@/lib/leave-notify";
 import { sendEmail } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
-import { env } from "@/lib/env";
 
 const joinSchema = z.object({
   gameId: z.string().min(1),
@@ -44,104 +48,73 @@ export async function leaveGameAction(formData: FormData) {
   await requireGameMember(gameId); // must belong to the game's group
 
   const outcome = await leaveGame(gameId, user.id);
+  await notifyLeaveOutcome(gameId, outcome);
+
   const gameUrl = `/games/${gameId}`;
-  const game = await prisma.game.findUnique({ where: { id: gameId } });
+  revalidatePath(gameUrl);
+  revalidatePath(`${gameUrl}/book`);
+  revalidatePath("/");
+  return { ok: true as const };
+}
+
+/**
+ * Admin: remove any player from a game at any point — a late drop-out who
+ * didn't take themselves out, a no-show, or a mistaken signup. Runs the exact
+ * same path as a self drop-out ({@link leaveGame}): a waitlister is pulled in to
+ * take the freed spot (and, on a locked game, the dropped player's team slot),
+ * duties are re-picked if their holder is the one removed, and everyone affected
+ * is notified. The removed player is told too.
+ */
+export async function removePlayerAction(
+  gameId: string,
+  userId: string,
+): Promise<{ ok: true } | { error: string }> {
+  await requireGameAdmin(gameId); // admin of the game's group
+  if (!gameId || !userId) return { error: "Missing game or player id" };
+
+  const target = await prisma.signup.findUnique({
+    where: { gameId_userId: { gameId, userId } },
+    select: {
+      status: true,
+      user: { select: { name: true, email: true } },
+    },
+  });
+  if (!target || target.status === SignupStatus.DROPPED_OUT) {
+    return { error: "That player isn't in this game." };
+  }
+
+  const outcome = await leaveGame(gameId, userId);
+  await notifyLeaveOutcome(gameId, outcome);
+
+  // Let the removed player know — they didn't take themselves out.
+  const gameUrl = `/games/${gameId}`;
+  const game = await prisma.game.findUnique({
+    where: { id: gameId },
+    select: { kickoffAt: true },
+  });
   const when = game?.kickoffAt.toLocaleDateString("en-GB", {
     day: "numeric",
     month: "long",
     timeZone: "Europe/London",
   });
-
-  // Waitlister promoted into the freed spot.
-  if (outcome.promotedUserId) {
-    const promoted = await prisma.user.findUnique({
-      where: { id: outcome.promotedUserId },
-    });
-    if (promoted?.email) {
-      await sendEmail({
-        to: promoted.email,
-        subject: "You're in! Promoted from the waitlist",
-        html: `<p>Hi ${promoted.name ?? "there"},</p>
-          <p>A spot opened up for the ${when} game and you're now confirmed. See you Sunday.</p>`,
-      }).catch(() => undefined);
-    }
-    await sendPushToUsers([outcome.promotedUserId], {
-      title: "You're in!",
-      body: `A spot opened up for ${when} — you're confirmed.`,
-      url: gameUrl,
-    });
+  if (target.user.email) {
+    await sendEmail({
+      to: target.user.email,
+      subject: "You've been removed from Sunday's game",
+      html: `<p>Hi ${target.user.name ?? "there"},</p>
+        <p>An admin has removed you from the ${when} game. If you think this was a mistake, have a word with your group admin.</p>`,
+    }).catch(() => undefined);
   }
-
-  // Booker dropped out and a new one was picked.
-  if (outcome.newBookerId) {
-    const newBooker = await prisma.user.findUnique({
-      where: { id: outcome.newBookerId },
-    });
-    if (newBooker?.email) {
-      await sendEmail({
-        to: newBooker.email,
-        subject: "You're now booking the pitch this Sunday",
-        html: `<p>Hi ${newBooker.name ?? "there"},</p>
-          <p>The original booker dropped out, so you've been picked to book the pitch for ${when}.</p>
-          <p><a href="${env.appUrl}${gameUrl}/book">Open the booking page</a>.</p>`,
-      }).catch(() => undefined);
-    }
-    await sendPushToUsers([outcome.newBookerId], {
-      title: "You're now booking Sunday",
-      body: "The previous booker dropped out — you've been picked.",
-      url: `${gameUrl}/book`,
-    });
-    // Tell the rest of the squad the booker changed.
-    const others = await prisma.signup.findMany({
-      where: { gameId, status: SignupStatus.CONFIRMED },
-      select: { userId: true },
-    });
-    await sendPushToUsers(
-      others.map((s) => s.userId).filter((id) => id !== outcome.newBookerId),
-      {
-        title: "Booker changed",
-        body: `${newBooker?.name ?? "Someone"} is now booking the pitch.`,
-        url: gameUrl,
-      },
-    );
-  }
-
-  // Bibs / football duty reassigned because the previous holder dropped.
-  if (outcome.newBibsUserId) {
-    await sendPushToUsers([outcome.newBibsUserId], {
-      title: "You've got the bibs 🦺",
-      body: "Someone dropped out — you're now taking the bibs home this week.",
-      url: gameUrl,
-    });
-  }
-  if (outcome.newFootballUserId) {
-    await sendPushToUsers([outcome.newFootballUserId], {
-      title: "You've got the football ⚽",
-      body: "Someone dropped out — you're now taking the ball home this week.",
-      url: gameUrl,
-    });
-  }
-
-  // Dropped below the minimum — game reopened for signups.
-  if (outcome.revertedToOpen) {
-    const confirmed = await prisma.signup.findMany({
-      where: { gameId, status: SignupStatus.CONFIRMED },
-      select: { userId: true },
-    });
-    await sendPushToUsers(
-      confirmed.map((s) => s.userId),
-      {
-        title: "Game reopened",
-        body: "We dropped below 10 — signups are open again. Grab a mate!",
-        url: gameUrl,
-      },
-    );
-  }
+  await sendPushToUsers([userId], {
+    title: "Removed from the game",
+    body: `An admin removed you from the ${when} game.`,
+    url: gameUrl,
+  });
 
   revalidatePath(gameUrl);
   revalidatePath(`${gameUrl}/book`);
   revalidatePath("/");
-  return { ok: true as const };
+  return { ok: true };
 }
 
 /** Booker-only: push a payment reminder to everyone who still owes. */
