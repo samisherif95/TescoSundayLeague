@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { getGroupRatingMembers } from "@/lib/games-queries";
 import { buildRatingsBoard, type RatingEntry } from "@/lib/ratings";
 import { canViewRatingsAudit } from "@/lib/ratings-audit";
-import { requireActiveGroup } from "@/lib/session";
+import { requireGroupAdmin } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import type { Position } from "@/generated/prisma/enums";
 
@@ -17,10 +17,10 @@ const POSITION_COLOR: Record<Position, string> = {
 };
 
 export default async function RatingsPage() {
-  const { user, group, membership } = await requireActiveGroup();
-  // Ratings are private: a regular member only ever sees their own score.
-  // Admins keep the full group board so they can manage the squad.
-  const isAdmin = membership.role === "ADMIN";
+  // Ratings are private: only group admins get the full board. Regular members
+  // see just their own score on their profile — and requireGroupAdmin redirects
+  // them away if they reach this route directly.
+  const { user, group } = await requireGroupAdmin();
   const members = await getGroupRatingMembers(group.id);
   const board = buildRatingsBoard(
     members.map((m) => ({
@@ -33,16 +33,12 @@ export default async function RatingsPage() {
     })),
   );
 
-  // Non-admins see only their own row, and without a rank (which would leak
-  // where they sit relative to everyone else).
-  const visible = isAdmin ? board : board.filter((e) => e.id === user.id);
-
   return (
     <main className="mx-auto max-w-3xl space-y-6 px-4 py-6">
       <header className="space-y-1">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold tracking-tight">
-            {isAdmin ? "Player ratings" : "Your rating"}
+            Player ratings
           </h1>
           {canViewRatingsAudit(user.email) && (
             <Link
@@ -55,31 +51,29 @@ export default async function RatingsPage() {
           )}
         </div>
         <p className="text-sm text-muted-foreground">
-          {isAdmin
-            ? `Everyone in ${group.name}, ranked by the average rating their teammates have given them. Play well — your team is watching.`
-            : "The average rating your teammates have given you after games. Only you and your group's admins can see it."}
+          Everyone in {group.name}, ranked by the average rating their teammates
+          have given them. Only group admins can see this board.
         </p>
       </header>
 
-      {visible.length === 0 ? (
+      {board.length === 0 ? (
         <div className="rounded-2xl border bg-card p-10 text-center">
           <div className="mx-auto mb-5 inline-flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
             <Star className="size-6" />
           </div>
           <h2 className="font-display text-xl font-semibold tracking-tight">
-            {isAdmin ? "No players yet" : "Not yet rated"}
+            No players yet
           </h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            {isAdmin
-              ? "Once members join and rate each other after games, the ratings show up here."
-              : "Once your teammates rate you after a game, your rating shows up here."}
+            Once members join and rate each other after games, the ratings show
+            up here.
           </p>
         </div>
       ) : (
         <Card>
           <CardContent className="divide-y p-0">
-            {visible.map((entry) => (
-              <Row key={entry.id} entry={entry} showRank={isAdmin} />
+            {board.map((entry) => (
+              <Row key={entry.id} entry={entry} />
             ))}
           </CardContent>
         </Card>
@@ -88,12 +82,12 @@ export default async function RatingsPage() {
   );
 }
 
-function Row({ entry, showRank }: { entry: RatingEntry; showRank: boolean }) {
+function Row({ entry }: { entry: RatingEntry }) {
   const initial = (entry.name ?? "?").slice(0, 1).toUpperCase();
   const rated = entry.ratingsCount > 0;
   return (
     <div className="flex items-center gap-3 px-4 py-3">
-      {showRank && <RankBadge rank={entry.rank} />}
+      <RankBadge rank={entry.rank} />
       <Avatar className="size-9">
         <AvatarImage src={entry.image ?? undefined} alt="" />
         <AvatarFallback>{initial}</AvatarFallback>

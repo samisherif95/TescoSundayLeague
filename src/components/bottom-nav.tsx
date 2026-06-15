@@ -23,10 +23,14 @@ export function BottomNav({ isAdmin }: { isAdmin: boolean }) {
     { href: "/home", label: "This week", Icon: Home },
     { href: "/games", label: "History", Icon: History },
     { href: "/leaderboard", label: "Leaders", Icon: Trophy },
-    { href: "/ratings", label: "Ratings", Icon: Star },
     { href: "/profile", label: "Profile", Icon: User },
+    // Ratings are private — only admins get the group board (everyone else sees
+    // just their own score on their profile).
     ...(isAdmin
-      ? [{ href: "/admin", label: "Admin", Icon: Settings }]
+      ? [
+          { href: "/ratings", label: "Ratings", Icon: Star },
+          { href: "/admin", label: "Admin", Icon: Settings },
+        ]
       : []),
   ];
 
