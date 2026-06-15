@@ -54,8 +54,9 @@ export function AppHeader({ user, group, groups, isDemo }: Props) {
           <NavLink href="/home" label="This week" />
           <NavLink href="/games" label="History" />
           <NavLink href="/leaderboard" label="Leaderboard" />
-          <NavLink href="/ratings" label="Ratings" />
           <NavLink href="/profile" label="Profile" />
+          {/* Ratings are admin-only; members see their own score on their profile. */}
+          {user.isAdmin && <NavLink href="/ratings" label="Ratings" />}
           {user.isAdmin && <NavLink href="/admin" label="Admin" />}
         </nav>
         <div className="flex items-center gap-1">

@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { getGroupRatingMembers } from "@/lib/games-queries";
 import { buildRatingsBoard, type RatingEntry } from "@/lib/ratings";
 import { canViewRatingsAudit } from "@/lib/ratings-audit";
-import { requireActiveGroup } from "@/lib/session";
+import { requireGroupAdmin } from "@/lib/session";
 import { cn } from "@/lib/utils";
 import type { Position } from "@/generated/prisma/enums";
 
@@ -17,7 +17,10 @@ const POSITION_COLOR: Record<Position, string> = {
 };
 
 export default async function RatingsPage() {
-  const { user, group } = await requireActiveGroup();
+  // Ratings are private: only group admins get the full board. Regular members
+  // see just their own score on their profile — and requireGroupAdmin redirects
+  // them away if they reach this route directly.
+  const { user, group } = await requireGroupAdmin();
   const members = await getGroupRatingMembers(group.id);
   const board = buildRatingsBoard(
     members.map((m) => ({
@@ -49,7 +52,7 @@ export default async function RatingsPage() {
         </div>
         <p className="text-sm text-muted-foreground">
           Everyone in {group.name}, ranked by the average rating their teammates
-          have given them. Play well — your team is watching.
+          have given them. Only group admins can see this board.
         </p>
       </header>
 

@@ -13,7 +13,7 @@ const { tx, prisma } = vi.hoisted(() => {
     },
     guest: { deleteMany: vi.fn(), count: vi.fn(), findMany: vi.fn() },
     groupMember: { findMany: vi.fn() },
-    teamPlayer: { findFirst: vi.fn(), update: vi.fn() },
+    teamPlayer: { findFirst: vi.fn(), update: vi.fn(), delete: vi.fn() },
     team: { deleteMany: vi.fn(), create: vi.fn() },
   };
   return {
@@ -62,6 +62,7 @@ beforeEach(() => {
   tx.signup.update.mockResolvedValue({});
   tx.game.update.mockResolvedValue({});
   tx.teamPlayer.update.mockResolvedValue({});
+  tx.teamPlayer.delete.mockResolvedValue({});
 });
 
 describe("leaveGame — locked game, waitlister available", () => {
@@ -91,6 +92,86 @@ describe("leaveGame — locked game, waitlister available", () => {
     expect(out.teamsRegenerated).toBe(false);
     expect(tx.team.deleteMany).not.toHaveBeenCalled();
     expect(tx.team.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("leaveGame — booked game, waitlister available", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "BOOKED",
+      groupId: "grp1",
+      bookerId: "u-booker",
+      bibsUserId: "u-bibs",
+      footballUserId: "u-foot",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+    });
+    // One waitlister waiting to come in.
+    tx.signup.findFirst.mockResolvedValue({ id: "sw1", userId: "u-wait" });
+    tx.signup.findMany.mockResolvedValue([]); // remaining waitlist (none left)
+    // The dropped player's existing team slot.
+    tx.teamPlayer.findFirst.mockResolvedValue({
+      id: "tp-drop",
+      team: { label: "B" },
+    });
+  });
+
+  it("slots the promoted player into the dropped player's team without touching duties", async () => {
+    const out = await leaveGame("g1", "u-drop");
+
+    expect(out.promotedUserId).toBe("u-wait");
+    expect(out.promotedTeamLabel).toBe("B");
+    // Targeted swap into the freed slot.
+    expect(tx.teamPlayer.update).toHaveBeenCalledWith({
+      where: { id: "tp-drop" },
+      data: { userId: "u-wait" },
+    });
+    // The booking/duties are already settled — leave them alone.
+    expect(out.newBookerId).toBeNull();
+    expect(out.newBibsUserId).toBeNull();
+    expect(out.newFootballUserId).toBeNull();
+    expect(out.teamsRegenerated).toBe(false);
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
+    expect(out.status).toBe("BOOKED");
+  });
+});
+
+describe("leaveGame — booked game, no waitlister", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "BOOKED",
+      groupId: "grp1",
+      bookerId: "u-booker",
+      bibsUserId: "u-bibs",
+      footballUserId: "u-foot",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+    });
+    tx.signup.findFirst.mockResolvedValue(null); // nobody waiting
+    tx.signup.findMany.mockResolvedValue([]); // remaining waitlist (none)
+    // The dropped player's existing team slot.
+    tx.teamPlayer.findFirst.mockResolvedValue({
+      id: "tp-drop",
+      team: { label: "B" },
+    });
+  });
+
+  it("vacates the dropped player's team slot and leaves the rest alone", async () => {
+    const out = await leaveGame("g1", "u-drop");
+
+    expect(out.promotedUserId).toBeNull();
+    // The dropped player is pulled out of their team, leaving the slot open.
+    expect(tx.teamPlayer.delete).toHaveBeenCalledWith({
+      where: { id: "tp-drop" },
+    });
+    expect(tx.teamPlayer.update).not.toHaveBeenCalled();
+    // Booking/duties already settled — untouched, and no full rebuild.
+    expect(out.newBookerId).toBeNull();
+    expect(out.teamsRegenerated).toBe(false);
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
+    expect(out.status).toBe("BOOKED");
   });
 });
 
