@@ -17,7 +17,10 @@ const POSITION_COLOR: Record<Position, string> = {
 };
 
 export default async function RatingsPage() {
-  const { user, group } = await requireActiveGroup();
+  const { user, group, membership } = await requireActiveGroup();
+  // Ratings are private: a regular member only ever sees their own score.
+  // Admins keep the full group board so they can manage the squad.
+  const isAdmin = membership.role === "ADMIN";
   const members = await getGroupRatingMembers(group.id);
   const board = buildRatingsBoard(
     members.map((m) => ({
@@ -30,12 +33,16 @@ export default async function RatingsPage() {
     })),
   );
 
+  // Non-admins see only their own row, and without a rank (which would leak
+  // where they sit relative to everyone else).
+  const visible = isAdmin ? board : board.filter((e) => e.id === user.id);
+
   return (
     <main className="mx-auto max-w-3xl space-y-6 px-4 py-6">
       <header className="space-y-1">
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-semibold tracking-tight">
-            Player ratings
+            {isAdmin ? "Player ratings" : "Your rating"}
           </h1>
           {canViewRatingsAudit(user.email) && (
             <Link
@@ -48,29 +55,31 @@ export default async function RatingsPage() {
           )}
         </div>
         <p className="text-sm text-muted-foreground">
-          Everyone in {group.name}, ranked by the average rating their teammates
-          have given them. Play well — your team is watching.
+          {isAdmin
+            ? `Everyone in ${group.name}, ranked by the average rating their teammates have given them. Play well — your team is watching.`
+            : "The average rating your teammates have given you after games. Only you and your group's admins can see it."}
         </p>
       </header>
 
-      {board.length === 0 ? (
+      {visible.length === 0 ? (
         <div className="rounded-2xl border bg-card p-10 text-center">
           <div className="mx-auto mb-5 inline-flex size-12 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
             <Star className="size-6" />
           </div>
           <h2 className="font-display text-xl font-semibold tracking-tight">
-            No players yet
+            {isAdmin ? "No players yet" : "Not yet rated"}
           </h2>
           <p className="mt-2 text-sm text-muted-foreground">
-            Once members join and rate each other after games, the ratings show
-            up here.
+            {isAdmin
+              ? "Once members join and rate each other after games, the ratings show up here."
+              : "Once your teammates rate you after a game, your rating shows up here."}
           </p>
         </div>
       ) : (
         <Card>
           <CardContent className="divide-y p-0">
-            {board.map((entry) => (
-              <Row key={entry.id} entry={entry} />
+            {visible.map((entry) => (
+              <Row key={entry.id} entry={entry} showRank={isAdmin} />
             ))}
           </CardContent>
         </Card>
@@ -79,12 +88,12 @@ export default async function RatingsPage() {
   );
 }
 
-function Row({ entry }: { entry: RatingEntry }) {
+function Row({ entry, showRank }: { entry: RatingEntry; showRank: boolean }) {
   const initial = (entry.name ?? "?").slice(0, 1).toUpperCase();
   const rated = entry.ratingsCount > 0;
   return (
     <div className="flex items-center gap-3 px-4 py-3">
-      <RankBadge rank={entry.rank} />
+      {showRank && <RankBadge rank={entry.rank} />}
       <Avatar className="size-9">
         <AvatarImage src={entry.image ?? undefined} alt="" />
         <AvatarFallback>{initial}</AvatarFallback>

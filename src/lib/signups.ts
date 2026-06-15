@@ -268,9 +268,11 @@ export type LeaveOutcome = {
  *    If no one was waiting, the remaining squad is rebalanced into fresh teams.
  *    Dropping below the minimum reverts the game to OPEN (clearing booker +
  *    teams).
- *  - BOOKED: the money's already split, so don't touch teams/booker/payments —
+ *  - BOOKED: the money's already split, so don't touch booker/duties/payments —
  *    just record the drop-out and promote a waitlister (the booker reconciles
- *    any cash with them informally).
+ *    any cash with them informally). The promoted waitlister does slot straight
+ *    into the dropped player's existing team spot, so the team sheet reflects
+ *    who's actually playing.
  *  - COMPLETED / CANCELLED: the game's already done, so just record the
  *    drop-out — nobody is promoted into a finished game.
  *
@@ -437,6 +439,27 @@ export async function leaveGame(
         });
         revertedToOpen = true;
         status = GameStatus.OPEN;
+      }
+    } else if (
+      wasConfirmed &&
+      game.status === GameStatus.BOOKED &&
+      promotedUserId
+    ) {
+      // On a BOOKED game the booking + payments are already settled, so we leave
+      // the booker/duties/money untouched. But the teams were generated at lock
+      // time and the promoted waitlister has genuinely taken the dropped player's
+      // place — so slot them straight into that team spot, otherwise the team
+      // sheet would keep showing the player who left.
+      const slot = await tx.teamPlayer.findFirst({
+        where: { userId, team: { gameId } },
+        include: { team: { select: { label: true } } },
+      });
+      if (slot) {
+        await tx.teamPlayer.update({
+          where: { id: slot.id },
+          data: { userId: promotedUserId },
+        });
+        promotedTeamLabel = slot.team.label;
       }
     }
 
