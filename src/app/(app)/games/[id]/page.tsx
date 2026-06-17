@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PlayerPill } from "@/components/player-pill";
-import { getGameWithDetail } from "@/lib/games-queries";
+import { getGameWithDetail, getGroupMembers } from "@/lib/games-queries";
 import { requireOnboardedUser, requireGroupMember } from "@/lib/session";
 import {
   GameStatus,
@@ -28,6 +28,7 @@ import { MatchDay } from "./_match-day";
 import { TeamsEditor } from "./_teams-editor";
 import { GameDetailsLine } from "./_details-editor";
 import { AdminLockCard } from "./_admin-lock";
+import { AddPlayerCard, type AddablePlayer } from "./_add-player";
 import { AdminEndCard } from "./_admin-end";
 import { AdminCancelCard } from "./_admin-cancel";
 import { DutiesEditor } from "./_duties-editor";
@@ -65,6 +66,22 @@ export default async function GameDetailPage({
   );
   const isBooker = game.bookerId === user.id;
   const signupsOpen = isSignupOpen(game, game.group?.lockOffsetHours);
+
+  // Admins can hand-add any group member who isn't already in the game (signups
+  // here already exclude drop-outs, so a previously-dropped player can be re-added).
+  let addablePlayers: AddablePlayer[] = [];
+  if (isAdmin && game.status === GameStatus.OPEN && game.groupId) {
+    const inGame = new Set(game.signups.map((s) => s.user.id));
+    const members = await getGroupMembers(game.groupId);
+    addablePlayers = members
+      .map((m) => m.user)
+      .filter((u) => !inGame.has(u.id))
+      .map((u) => ({
+        id: u.id,
+        name: u.name,
+        preferredPosition: u.preferredPosition,
+      }));
+  }
 
   // +1 guests count as bodies on the pitch, so the roster (and "more needed")
   // is members + guests.
@@ -276,6 +293,10 @@ export default async function GameDetailPage({
           confirmedCount={rosterCount}
           minPlayers={MIN_PLAYERS}
         />
+      )}
+
+      {game.status === GameStatus.OPEN && isAdmin && (
+        <AddPlayerCard gameId={game.id} candidates={addablePlayers} />
       )}
 
       {game.status === GameStatus.OPEN && isAdmin && (

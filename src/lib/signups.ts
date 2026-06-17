@@ -137,11 +137,18 @@ export type SignupResult =
   | { kind: "GAME_LOCKED" }
   | { kind: "GAME_FULL_NO_WAITLIST" };
 
-/** Add a user to a game's signup list. Returns where they landed. */
+/**
+ * Add a user to a game's signup list. Returns where they landed.
+ *
+ * `bypassDeadline` lets an admin add a player even after the soft signup
+ * deadline has passed (see {@link addPlayerAction}); the game must still be OPEN
+ * either way — this never reopens a locked lineup.
+ */
 export async function joinGame(
   gameId: string,
   userId: string,
   position: Position,
+  { bypassDeadline = false }: { bypassDeadline?: boolean } = {},
 ): Promise<SignupResult> {
   return serializableTx(async (tx) => {
     const game = await tx.game.findUnique({
@@ -150,11 +157,12 @@ export async function joinGame(
     });
     if (!game) throw new Error("Game not found");
     // Closed once the game leaves OPEN *or* the group's signup deadline passes —
-    // the deadline gates signups even before an admin locks the lineup.
-    if (
-      game.status !== GameStatus.OPEN ||
-      new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours)
-    ) {
+    // the deadline gates signups even before an admin locks the lineup. An admin
+    // adding a player (bypassDeadline) skips the deadline but still needs OPEN.
+    const deadlinePassed =
+      !bypassDeadline &&
+      new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours);
+    if (game.status !== GameStatus.OPEN || deadlinePassed) {
       return { kind: "GAME_LOCKED" as const };
     }
 
