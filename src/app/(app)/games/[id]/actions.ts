@@ -13,7 +13,7 @@ import {
   requireGameMember,
   requireGameAdmin,
 } from "@/lib/session";
-import { joinGame, leaveGame } from "@/lib/signups";
+import { joinGame, leaveGame, type SignupResult } from "@/lib/signups";
 import { notifyLeaveOutcome } from "@/lib/leave-notify";
 import { sendEmail } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
@@ -55,6 +55,97 @@ export async function leaveGameAction(formData: FormData) {
   revalidatePath(`${gameUrl}/book`);
   revalidatePath("/");
   return { ok: true as const };
+}
+
+const addPlayerSchema = z.object({
+  gameId: z.string().min(1),
+  userId: z.string().min(1),
+  position: z.enum(["DEF", "MID", "FWD"]),
+});
+
+/**
+ * Admin: add any group member to a game on their behalf — someone who asked to
+ * be put down in person, or to make up the numbers. Runs the exact same signup
+ * engine as a self sign-up ({@link joinGame}), so the cap, the waitlist and the
+ * concurrency handling all behave identically. The one admin privilege is that
+ * the soft signup deadline is bypassed: a player can be added any time the game
+ * is still OPEN (but never once it's locked). The added player is emailed +
+ * pushed so they know they're down.
+ */
+export async function addPlayerAction(
+  gameId: string,
+  userId: string,
+  position: Position,
+): Promise<{ ok: true; result: SignupResult } | { error: string }> {
+  const { groupId } = await requireGameAdmin(gameId); // admin of the game's group
+  const parsed = addPlayerSchema.safeParse({ gameId, userId, position });
+  if (!parsed.success) {
+    return { error: parsed.error.issues[0]?.message ?? "Invalid request" };
+  }
+
+  // Multi-tenant safety: an admin can only add someone who actually belongs to
+  // this game's group — never a stranger from another club.
+  const member = await prisma.groupMember.findUnique({
+    where: { groupId_userId: { groupId, userId } },
+    select: { user: { select: { name: true, email: true } } },
+  });
+  if (!member) {
+    return { error: "That player isn't a member of this group." };
+  }
+
+  // Don't silently re-add (and re-notify) someone who's already in the game.
+  const existing = await prisma.signup.findUnique({
+    where: { gameId_userId: { gameId, userId } },
+    select: { status: true },
+  });
+  if (existing && existing.status !== SignupStatus.DROPPED_OUT) {
+    return { error: "That player is already in this game." };
+  }
+
+  const result = await joinGame(gameId, userId, position, {
+    bypassDeadline: true,
+  });
+  if (result.kind === "GAME_LOCKED") {
+    return { error: "This game is no longer open for signups." };
+  }
+  if (result.kind === "GAME_FULL_NO_WAITLIST") {
+    return { error: "The squad is full." };
+  }
+
+  // Let the added player know an admin put them down (confirmed vs waitlisted).
+  const confirmed = result.kind === "CONFIRMED";
+  const game = await prisma.game.findUnique({
+    where: { id: gameId },
+    select: { kickoffAt: true },
+  });
+  const when = game?.kickoffAt.toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    timeZone: "Europe/London",
+  });
+  if (member.user.email) {
+    await sendEmail({
+      to: member.user.email,
+      subject: confirmed
+        ? "You're in for Sunday's game"
+        : "You've been added to Sunday's waitlist",
+      html: `<p>Hi ${member.user.name ?? "there"},</p>
+        <p>An admin has added you to the ${when} game${
+          confirmed ? "" : " — you're on the waitlist for now"
+        }. See you on the pitch!</p>`,
+    }).catch(() => undefined);
+  }
+  await sendPushToUsers([userId], {
+    title: confirmed ? "You're in for Sunday ⚽" : "Added to the waitlist",
+    body: confirmed
+      ? `An admin added you to the ${when} game.`
+      : `An admin added you to the ${when} waitlist.`,
+    url: `/games/${gameId}`,
+  }).catch(() => undefined);
+
+  revalidatePath(`/games/${gameId}`);
+  revalidatePath("/");
+  return { ok: true, result };
 }
 
 /**

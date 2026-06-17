@@ -114,6 +114,23 @@ export const getGameWithDetail = cache((id: string) => {
   });
 });
 
+/**
+ * Lean roster of a group — id, name, preferred position — ordered by name. Feeds
+ * the admin "add a player" picker on the game page (the caller filters out
+ * anyone already in the game).
+ */
+export const getGroupMembers = cache((groupId: string) => {
+  return prisma.groupMember.findMany({
+    where: { groupId },
+    orderBy: { user: { name: "asc" } },
+    select: {
+      user: {
+        select: { id: true, name: true, preferredPosition: true },
+      },
+    },
+  });
+});
+
 // Lighter include for the history list: just enough to summarise each game
 // (per-match scores + scorers). No signups/payments — those are detail-only.
 const historyInclude = {
