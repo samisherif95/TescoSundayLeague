@@ -258,7 +258,12 @@ export default async function GameDetailPage({
           <AdminCancelCard gameId={game.id} />
         )}
 
-      {game.status === GameStatus.OPEN && signupsOpen && (
+      {/* Join / position controls: while the game is OPEN (and within the
+          deadline), and — for late joiners back-filling a drop-out — once it's
+          LOCKED, for anyone not already confirmed. Confirmed players on a LOCKED
+          game get the DropOutCard instead. */}
+      {((game.status === GameStatus.OPEN && signupsOpen) ||
+        (game.status === GameStatus.LOCKED && !amConfirmed)) && (
         <SignupControls
           gameId={game.id}
           mySignup={
@@ -271,7 +276,7 @@ export default async function GameDetailPage({
               : null
           }
           preferredPosition={user.preferredPosition ?? null}
-          confirmedCount={confirmed.length}
+          confirmedCount={rosterCount}
           maxPlayers={MAX_PLAYERS}
         />
       )}

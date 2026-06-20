@@ -141,8 +141,13 @@ export type SignupResult =
  * Add a user to a game's signup list. Returns where they landed.
  *
  * `bypassDeadline` lets an admin add a player even after the soft signup
- * deadline has passed (see {@link addPlayerAction}); the game must still be OPEN
- * either way — this never reopens a locked lineup.
+ * deadline has passed (see {@link addPlayerAction}).
+ *
+ * Late joins: a LOCKED game still takes new signups. People drop out after the
+ * lineup's locked, so we let others step in — a joiner fills any spot a drop-out
+ * freed (slotted straight into the rebuilt teams) or lands on the waitlist if
+ * the squad's already full. Only LOCKED reopens this way: a BOOKED game has its
+ * money split and teams frozen, and a COMPLETED/CANCELLED game is done.
  */
 export async function joinGame(
   gameId: string,
@@ -156,13 +161,16 @@ export async function joinGame(
       include: { group: { select: { lockOffsetHours: true } } },
     });
     if (!game) throw new Error("Game not found");
-    // Closed once the game leaves OPEN *or* the group's signup deadline passes —
-    // the deadline gates signups even before an admin locks the lineup. An admin
-    // adding a player (bypassDeadline) skips the deadline but still needs OPEN.
+    // A LOCKED game stays open to late joins (back-filling drop-outs); every
+    // other non-OPEN status is closed for good.
+    const lateJoin = game.status === GameStatus.LOCKED;
+    // The soft signup deadline only gates an OPEN game — a LOCKED late-join is by
+    // definition already past it. An admin add (bypassDeadline) skips it too.
     const deadlinePassed =
       !bypassDeadline &&
+      game.status === GameStatus.OPEN &&
       new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours);
-    if (game.status !== GameStatus.OPEN || deadlinePassed) {
+    if ((game.status !== GameStatus.OPEN && !lateJoin) || deadlinePassed) {
       return { kind: "GAME_LOCKED" as const };
     }
 
@@ -211,6 +219,12 @@ export async function joinGame(
             status: SignupStatus.CONFIRMED,
           },
         });
+      }
+      // On a LOCKED game the teams already exist, so rebuild them to slot the
+      // new player into the freed spot and keep the sides balanced. (OPEN games
+      // have no teams yet — they're generated at lock time.)
+      if (lateJoin) {
+        await regenerateTeams(tx, gameId);
       }
       return { kind: "CONFIRMED" as const };
     }
