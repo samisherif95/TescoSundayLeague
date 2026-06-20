@@ -141,8 +141,13 @@ export type SignupResult =
  * Add a user to a game's signup list. Returns where they landed.
  *
  * `bypassDeadline` lets an admin add a player even after the soft signup
- * deadline has passed (see {@link addPlayerAction}); the game must still be OPEN
- * either way — this never reopens a locked lineup.
+ * deadline has passed (see {@link addPlayerAction}).
+ *
+ * Late joins: a LOCKED game still takes new signups. People drop out after the
+ * lineup's locked, so we let others step in — a joiner fills any spot a drop-out
+ * freed (slotted straight into the rebuilt teams) or lands on the waitlist if
+ * the squad's already full. Only LOCKED reopens this way: a BOOKED game has its
+ * money split and teams frozen, and a COMPLETED/CANCELLED game is done.
  */
 export async function joinGame(
   gameId: string,
@@ -156,13 +161,16 @@ export async function joinGame(
       include: { group: { select: { lockOffsetHours: true } } },
     });
     if (!game) throw new Error("Game not found");
-    // Closed once the game leaves OPEN *or* the group's signup deadline passes —
-    // the deadline gates signups even before an admin locks the lineup. An admin
-    // adding a player (bypassDeadline) skips the deadline but still needs OPEN.
+    // A LOCKED game stays open to late joins (back-filling drop-outs); every
+    // other non-OPEN status is closed for good.
+    const lateJoin = game.status === GameStatus.LOCKED;
+    // The soft signup deadline only gates an OPEN game — a LOCKED late-join is by
+    // definition already past it. An admin add (bypassDeadline) skips it too.
     const deadlinePassed =
       !bypassDeadline &&
+      game.status === GameStatus.OPEN &&
       new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours);
-    if (game.status !== GameStatus.OPEN || deadlinePassed) {
+    if ((game.status !== GameStatus.OPEN && !lateJoin) || deadlinePassed) {
       return { kind: "GAME_LOCKED" as const };
     }
 
@@ -212,6 +220,12 @@ export async function joinGame(
           },
         });
       }
+      // On a LOCKED game the teams already exist, so rebuild them to slot the
+      // new player into the freed spot and keep the sides balanced. (OPEN games
+      // have no teams yet — they're generated at lock time.)
+      if (lateJoin) {
+        await regenerateTeams(tx, gameId);
+      }
       return { kind: "CONFIRMED" as const };
     }
 
@@ -241,6 +255,69 @@ export async function joinGame(
       });
     }
     return { kind: "WAITLIST" as const, position: nextWaitlist };
+  });
+}
+
+export type AddGuestResult =
+  | { kind: "ADDED" }
+  | { kind: "GAME_LOCKED" }
+  | { kind: "GUESTS_DISABLED" }
+  | { kind: "NOT_CONFIRMED" }
+  | { kind: "FULL" };
+
+/**
+ * Add a +1 guest hosted by `hostUserId`. Mirrors {@link joinGame}: allowed while
+ * the game is OPEN (before the deadline) *and* on a LOCKED game — where the new
+ * +1 fills a spot freed by a drop-out and is slotted straight into the rebuilt
+ * teams. The host must be a confirmed player, guests must be enabled for the
+ * game, and the squad mustn't already be full. Atomic (serializable) so the cap
+ * holds under concurrent fills.
+ */
+export async function addGuest(
+  gameId: string,
+  hostUserId: string,
+): Promise<AddGuestResult> {
+  return serializableTx(async (tx) => {
+    const game = await tx.game.findUnique({
+      where: { id: gameId },
+      include: { group: { select: { lockOffsetHours: true } } },
+    });
+    if (!game) throw new Error("Game not found");
+    // A LOCKED game still takes +1s (back-filling drop-outs); the soft deadline
+    // only gates an OPEN game.
+    const lateJoin = game.status === GameStatus.LOCKED;
+    const deadlinePassed =
+      game.status === GameStatus.OPEN &&
+      new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours);
+    if ((game.status !== GameStatus.OPEN && !lateJoin) || deadlinePassed) {
+      return { kind: "GAME_LOCKED" as const };
+    }
+    if (!game.allowGuests) return { kind: "GUESTS_DISABLED" as const };
+
+    const host = await tx.signup.findUnique({
+      where: { gameId_userId: { gameId, userId: hostUserId } },
+      select: { status: true },
+    });
+    if (host?.status !== SignupStatus.CONFIRMED) {
+      return { kind: "NOT_CONFIRMED" as const };
+    }
+
+    // +1s occupy roster slots, so they count toward the cap alongside members.
+    const confirmedCount = await tx.signup.count({
+      where: { gameId, status: SignupStatus.CONFIRMED },
+    });
+    const guestCount = await tx.guest.count({ where: { gameId } });
+    if (confirmedCount + guestCount >= MAX_PLAYERS) {
+      return { kind: "FULL" as const };
+    }
+
+    await tx.guest.create({ data: { gameId, hostUserId } });
+    // On a LOCKED game the teams already exist — rebuild them so the +1 is
+    // slotted in and the sides stay balanced. (OPEN games have no teams yet.)
+    if (lateJoin) {
+      await regenerateTeams(tx, gameId);
+    }
+    return { kind: "ADDED" as const };
   });
 }
 

@@ -3,16 +3,19 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
+import { GameStatus } from "@/generated/prisma/enums";
 import { requireGameAdmin, requireGameMember } from "@/lib/session";
-import { MAX_PLAYERS, isSignupOpen } from "@/lib/game";
+import { MAX_PLAYERS } from "@/lib/game";
+import { addGuest } from "@/lib/signups";
 
 const gameIdSchema = z.object({ gameId: z.string().min(1) });
 
 /**
  * Admin toggle: allow (or stop allowing) +1 guests for a game. Turned on the
  * weeks an admin fears missing the minimum. Turning it off doesn't remove
- * guests already added — it just hides the "add a +1" button.
+ * guests already added — it just hides the "add a +1" button. Available while
+ * the game is OPEN or LOCKED, so an admin can still open up +1s to back-fill
+ * drop-outs after the lineup's locked.
  */
 export async function setAllowGuestsAction(
   gameId: string,
@@ -22,8 +25,11 @@ export async function setAllowGuestsAction(
   await requireGameAdmin(gameId);
   const game = await prisma.game.findUnique({ where: { id: gameId } });
   if (!game) return { error: "Game not found" };
-  if (game.status !== GameStatus.OPEN) {
-    return { error: "Guests can only be toggled while signups are open" };
+  if (
+    game.status !== GameStatus.OPEN &&
+    game.status !== GameStatus.LOCKED
+  ) {
+    return { error: "Guests can only be toggled while the game is live" };
   }
   await prisma.game.update({
     where: { id: gameId },
@@ -35,9 +41,11 @@ export async function setAllowGuestsAction(
 }
 
 /**
- * Add a +1 guest, hosted by the current user. Allowed only while the game is
- * OPEN, signups are still open, the admin has enabled guests, and the caller is
- * a confirmed player. Each call adds one guest — tap again for a second, etc.
+ * Add a +1 guest, hosted by the current user. Allowed while the game is OPEN
+ * (before the deadline) and once it's LOCKED — on a locked game the +1 fills a
+ * spot freed by a drop-out and is slotted into the rebuilt teams. The admin must
+ * have enabled guests and the caller must be a confirmed player. Each call adds
+ * one guest — tap again for a second, etc.
  */
 export async function addGuestAction(
   formData: FormData,
@@ -47,43 +55,18 @@ export async function addGuestAction(
   const { gameId } = parsed.data;
   const { user } = await requireGameMember(gameId);
 
-  const game = await prisma.game.findUnique({
-    where: { id: gameId },
-    include: {
-      group: { select: { lockOffsetHours: true } },
-      _count: {
-        select: {
-          signups: { where: { status: SignupStatus.CONFIRMED } },
-          guests: true,
-        },
-      },
-    },
-  });
-  if (!game) return { error: "Game not found" };
-  if (
-    game.status !== GameStatus.OPEN ||
-    !isSignupOpen(game, game.group?.lockOffsetHours)
-  ) {
-    return { error: "Signups have closed for this game" };
-  }
-  if (!game.allowGuests) {
-    return { error: "+1s aren't enabled for this game" };
+  const result = await addGuest(gameId, user.id);
+  switch (result.kind) {
+    case "GAME_LOCKED":
+      return { error: "Signups have closed for this game" };
+    case "GUESTS_DISABLED":
+      return { error: "+1s aren't enabled for this game" };
+    case "NOT_CONFIRMED":
+      return { error: "Only confirmed players can bring a +1" };
+    case "FULL":
+      return { error: `The squad is full (${MAX_PLAYERS}).` };
   }
 
-  const mySignup = await prisma.signup.findUnique({
-    where: { gameId_userId: { gameId, userId: user.id } },
-    select: { status: true },
-  });
-  if (mySignup?.status !== SignupStatus.CONFIRMED) {
-    return { error: "Only confirmed players can bring a +1" };
-  }
-
-  const rosterCount = game._count.signups + game._count.guests;
-  if (rosterCount >= MAX_PLAYERS) {
-    return { error: `The squad is full (${MAX_PLAYERS}).` };
-  }
-
-  await prisma.guest.create({ data: { gameId, hostUserId: user.id } });
   revalidatePath(`/games/${gameId}`);
   revalidatePath("/");
   return { ok: true };

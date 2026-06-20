@@ -8,10 +8,17 @@ const { tx, prisma } = vi.hoisted(() => {
     signup: {
       findUnique: vi.fn(),
       update: vi.fn(),
+      create: vi.fn(),
+      count: vi.fn(),
       findFirst: vi.fn(),
       findMany: vi.fn(),
     },
-    guest: { deleteMany: vi.fn(), count: vi.fn(), findMany: vi.fn() },
+    guest: {
+      deleteMany: vi.fn(),
+      count: vi.fn(),
+      findMany: vi.fn(),
+      create: vi.fn(),
+    },
     groupMember: { findMany: vi.fn() },
     teamPlayer: { findFirst: vi.fn(), update: vi.fn(), delete: vi.fn() },
     team: { deleteMany: vi.fn(), create: vi.fn() },
@@ -25,7 +32,7 @@ const { tx, prisma } = vi.hoisted(() => {
 });
 vi.mock("@/lib/db", () => ({ prisma }));
 
-import { leaveGame } from "@/lib/signups";
+import { addGuest, joinGame, leaveGame } from "@/lib/signups";
 
 const TEN_OTHERS = [
   "u-booker",
@@ -172,6 +179,168 @@ describe("leaveGame — booked game, no waitlister", () => {
     expect(tx.team.deleteMany).not.toHaveBeenCalled();
     expect(tx.team.create).not.toHaveBeenCalled();
     expect(out.status).toBe("BOOKED");
+  });
+});
+
+// Eleven confirmed signups with a skill score — enough for regenerateTeams to
+// rebuild the sides (it needs at least MIN_PLAYERS).
+const ELEVEN_CONFIRMED = Array.from({ length: 11 }, (_, i) => ({
+  userId: `u${i}`,
+  position: "MID",
+  user: { id: `u${i}`, skillScore: 3 },
+}));
+
+describe("joinGame — locked game with a freed spot", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "LOCKED",
+      groupId: "grp1",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    tx.signup.findUnique.mockResolvedValue(null); // brand-new signup
+    tx.signup.count.mockResolvedValue(10); // 10 confirmed, below MAX (15)
+    tx.guest.count.mockResolvedValue(0);
+    tx.signup.create.mockResolvedValue({});
+    // regenerateTeams reads the (now 11-strong) confirmed squad + guests.
+    tx.signup.findMany.mockResolvedValue(ELEVEN_CONFIRMED);
+    tx.guest.findMany.mockResolvedValue([]);
+  });
+
+  it("confirms the late joiner and rebuilds the teams", async () => {
+    const r = await joinGame("g1", "u-new", "MID");
+
+    expect(r).toEqual({ kind: "CONFIRMED" });
+    expect(tx.signup.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "CONFIRMED" }),
+      }),
+    );
+    // Teams are wiped + regenerated so the new player is slotted in.
+    expect(tx.team.deleteMany).toHaveBeenCalledWith({ where: { gameId: "g1" } });
+    expect(tx.team.create).toHaveBeenCalled();
+  });
+});
+
+describe("joinGame — locked game that's already full", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "LOCKED",
+      groupId: "grp1",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    tx.signup.findUnique.mockResolvedValue(null);
+    // First count = CONFIRMED (15, full); second = WAITLIST (none yet).
+    tx.signup.count.mockResolvedValueOnce(15).mockResolvedValueOnce(0);
+    tx.guest.count.mockResolvedValue(0);
+    tx.signup.create.mockResolvedValue({});
+  });
+
+  it("puts the joiner on the waitlist and leaves the teams alone", async () => {
+    const r = await joinGame("g1", "u-new", "MID");
+
+    expect(r).toEqual({ kind: "WAITLIST", position: 1 });
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("joinGame — booked game stays closed", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "BOOKED",
+      groupId: "grp1",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+  });
+
+  it("rejects the signup once the game is booked", async () => {
+    const r = await joinGame("g1", "u-new", "MID");
+
+    expect(r).toEqual({ kind: "GAME_LOCKED" });
+    expect(tx.signup.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("addGuest — locked game with a freed spot", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "LOCKED",
+      groupId: "grp1",
+      allowGuests: true,
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    tx.signup.findUnique.mockResolvedValue({ status: "CONFIRMED" }); // host
+    tx.signup.count.mockResolvedValue(10);
+    tx.guest.count.mockResolvedValue(0);
+    tx.guest.create.mockResolvedValue({});
+    tx.signup.findMany.mockResolvedValue(ELEVEN_CONFIRMED);
+    tx.guest.findMany.mockResolvedValue([]);
+  });
+
+  it("adds the +1 and rebuilds the teams", async () => {
+    const r = await addGuest("g1", "host1");
+
+    expect(r).toEqual({ kind: "ADDED" });
+    expect(tx.guest.create).toHaveBeenCalledWith({
+      data: { gameId: "g1", hostUserId: "host1" },
+    });
+    expect(tx.team.deleteMany).toHaveBeenCalledWith({ where: { gameId: "g1" } });
+    expect(tx.team.create).toHaveBeenCalled();
+  });
+
+  it("refuses once the squad is full", async () => {
+    tx.guest.count.mockResolvedValue(5); // 10 + 5 = 15 = MAX
+    const r = await addGuest("g1", "host1");
+    expect(r).toEqual({ kind: "FULL" });
+    expect(tx.guest.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a host who isn't a confirmed player", async () => {
+    tx.signup.findUnique.mockResolvedValue({ status: "WAITLIST" });
+    const r = await addGuest("g1", "host1");
+    expect(r).toEqual({ kind: "NOT_CONFIRMED" });
+    expect(tx.guest.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses when guests aren't enabled", async () => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "LOCKED",
+      groupId: "grp1",
+      allowGuests: false,
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    const r = await addGuest("g1", "host1");
+    expect(r).toEqual({ kind: "GUESTS_DISABLED" });
+    expect(tx.guest.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("addGuest — booked game stays closed", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "BOOKED",
+      groupId: "grp1",
+      allowGuests: true,
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+  });
+
+  it("rejects the +1 once the game is booked", async () => {
+    const r = await addGuest("g1", "host1");
+    expect(r).toEqual({ kind: "GAME_LOCKED" });
+    expect(tx.guest.create).not.toHaveBeenCalled();
   });
 });
 
