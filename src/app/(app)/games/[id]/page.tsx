@@ -88,9 +88,11 @@ export default async function GameDetailPage({
   const guests = game.guests;
   const rosterCount = confirmed.length + guests.length;
   const amConfirmed = mySignup?.status === SignupStatus.CONFIRMED;
+  // +1s can be added while the game is OPEN (within the deadline) and once it's
+  // LOCKED — a locked +1 back-fills a drop-out and slots into the teams.
   const canAddGuest =
-    game.status === GameStatus.OPEN &&
-    signupsOpen &&
+    ((game.status === GameStatus.OPEN && signupsOpen) ||
+      game.status === GameStatus.LOCKED) &&
     game.allowGuests &&
     amConfirmed &&
     rosterCount < MAX_PLAYERS;
@@ -304,9 +306,11 @@ export default async function GameDetailPage({
         <AddPlayerCard gameId={game.id} candidates={addablePlayers} />
       )}
 
-      {game.status === GameStatus.OPEN && isAdmin && (
-        <AllowGuestsToggle gameId={game.id} allow={game.allowGuests} />
-      )}
+      {(game.status === GameStatus.OPEN ||
+        game.status === GameStatus.LOCKED) &&
+        isAdmin && (
+          <AllowGuestsToggle gameId={game.id} allow={game.allowGuests} />
+        )}
 
       {game.status === GameStatus.BOOKED && isBooker && (
         <Card>
