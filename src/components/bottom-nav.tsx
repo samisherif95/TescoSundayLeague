@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Home, User, Settings, History } from "lucide-react";
+import { Home, User, Settings, History, Trophy, Star } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 type Item = {
@@ -22,9 +22,15 @@ export function BottomNav({ isAdmin }: { isAdmin: boolean }) {
   const items: Item[] = [
     { href: "/home", label: "This week", Icon: Home },
     { href: "/games", label: "History", Icon: History },
+    { href: "/leaderboard", label: "Leaders", Icon: Trophy },
     { href: "/profile", label: "Profile", Icon: User },
+    // Ratings are private — only admins get the group board (everyone else sees
+    // just their own score on their profile).
     ...(isAdmin
-      ? [{ href: "/admin", label: "Admin", Icon: Settings }]
+      ? [
+          { href: "/ratings", label: "Ratings", Icon: Star },
+          { href: "/admin", label: "Admin", Icon: Settings },
+        ]
       : []),
   ];
 

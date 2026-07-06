@@ -11,7 +11,6 @@ import {
 import { requireGroupAdmin, requireGameAdmin } from "@/lib/session";
 import { nextKickoff } from "@/lib/game";
 import { openWeeklyGame } from "@/lib/weekly-game";
-import { leaveGame } from "@/lib/signups";
 import { lockGame } from "@/lib/lock";
 import { completeGame } from "@/lib/complete";
 import { cancelGame } from "@/lib/cancel";
@@ -128,50 +127,6 @@ export async function cancelGameAction(
   if (!result.ok) return { error: result.error };
   revalidatePath(`/games/${gameId}`);
   revalidatePath("/admin");
-  revalidatePath("/home");
-  return { ok: true };
-}
-
-/**
- * Admin: remove a player from the game entirely (not just the payment split).
- * Unlike {@link removeDebtorAction} — which only touches money — this drops them
- * from the roster AND their team via the shared {@link leaveGame} cascade: it
- * marks them DROPPED_OUT, pulls their name off the lineup, promotes the waitlist
- * into the freed slot, and (on a LOCKED game) re-picks any duty they held and
- * regenerates the teams. Any +1 they brought stays and is billed to them.
- */
-export async function removePlayerAction(
-  gameId: string,
-  userId: string,
-): Promise<{ ok: true } | { error: string }> {
-  await requireGameAdmin(gameId);
-  if (!gameId || !userId) return { error: "Missing game or player id" };
-
-  const outcome = await leaveGame(gameId, userId);
-  const gameUrl = `/games/${gameId}`;
-
-  // Best-effort nudges — never block the removal on a flaky push.
-  await sendPushToUsers([userId], {
-    title: "Taken off this week's game",
-    body: "An admin has removed you from the lineup.",
-    url: gameUrl,
-  }).catch(() => undefined);
-  if (outcome.promotedUserIds.length > 0) {
-    await sendPushToUsers(outcome.promotedUserIds, {
-      title: "You're in!",
-      body: "A spot opened up — you're confirmed for the game.",
-      url: gameUrl,
-    }).catch(() => undefined);
-  }
-  if (outcome.newBookerId) {
-    await sendPushToUsers([outcome.newBookerId], {
-      title: "You're now booking",
-      body: "The previous booker was removed — you've been picked to book.",
-      url: `${gameUrl}/book`,
-    }).catch(() => undefined);
-  }
-
-  revalidatePath(gameUrl);
   revalidatePath("/home");
   return { ok: true };
 }

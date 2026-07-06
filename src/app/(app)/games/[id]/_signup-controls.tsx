@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Loader2 } from "lucide-react";
+import { Loader2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
@@ -12,7 +13,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { joinGameAction, leaveGameAction } from "./actions";
+import {
+  joinGameAction,
+  leaveGameAction,
+  removePlayerAction,
+} from "./actions";
 
 type Position = "DEF" | "MID" | "FWD";
 
@@ -123,5 +128,88 @@ export function SignupControls({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Drop-out card for a confirmed player once the lineup is locked (the join /
+ * position controls no longer apply). Dropping out here pulls the next
+ * waitlister straight into the freed spot and team.
+ */
+export function DropOutCard({ gameId }: { gameId: string }) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-5">
+        <p className="text-sm font-medium">You&apos;re in for Sunday.</p>
+        <p className="text-sm text-muted-foreground">
+          Can&apos;t make it? Drop out and the next player on the waitlist takes
+          your spot — and your place in the team.
+        </p>
+        <Button
+          variant="outline"
+          disabled={pending}
+          onClick={() =>
+            start(async () => {
+              const fd = new FormData();
+              fd.set("gameId", gameId);
+              const r = await leaveGameAction(fd);
+              if (r?.error) toast.error(r.error);
+              else {
+                toast.success("Dropped out.");
+                router.refresh();
+              }
+            })
+          }
+        >
+          {pending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+          Drop out
+        </Button>
+      </CardContent>
+    </Card>
+  );
+}
+
+/**
+ * Small × shown beside a player to an admin, removing them from the game
+ * (confirmed or waitlisted). Gated server-side in {@link removePlayerAction}.
+ */
+export function RemovePlayerButton({
+  gameId,
+  userId,
+  name,
+}: {
+  gameId: string;
+  userId: string;
+  name: string | null;
+}) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  const who = name ?? "this player";
+  return (
+    <button
+      type="button"
+      aria-label={`Remove ${who}`}
+      disabled={pending}
+      className="text-muted-foreground transition-colors hover:text-destructive disabled:opacity-50"
+      onClick={() =>
+        start(async () => {
+          if (!window.confirm(`Remove ${who} from this game?`)) return;
+          const r = await removePlayerAction(gameId, userId);
+          if ("error" in r) toast.error(r.error);
+          else {
+            toast.success(`Removed ${who}`);
+            router.refresh();
+          }
+        })
+      }
+    >
+      {pending ? (
+        <Loader2 className="size-4 animate-spin" />
+      ) : (
+        <X className="size-4" />
+      )}
+    </button>
   );
 }

@@ -5,7 +5,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { PlayerPill } from "@/components/player-pill";
-import { getGameWithDetail } from "@/lib/games-queries";
+import { getGameWithDetail, getGroupMembers } from "@/lib/games-queries";
 import { requireOnboardedUser, requireGroupMember } from "@/lib/session";
 import {
   GameStatus,
@@ -19,21 +19,24 @@ import {
   LONDON_TZ,
 } from "@/lib/game";
 import { deriveScore } from "@/lib/match";
-import { SignupControls } from "./_signup-controls";
+import {
+  SignupControls,
+  DropOutCard,
+  RemovePlayerButton,
+} from "./_signup-controls";
 import { PaymentsPanel } from "./_payments-panel";
 import { MatchDay } from "./_match-day";
 import { TeamsEditor } from "./_teams-editor";
 import { GameDetailsLine } from "./_details-editor";
 import { AdminLockCard } from "./_admin-lock";
+import { AddPlayerCard, type AddablePlayer } from "./_add-player";
 import { AdminEndCard } from "./_admin-end";
 import { AdminCancelCard } from "./_admin-cancel";
-import { DropOutCard } from "./_drop-out";
 import { DutiesEditor } from "./_duties-editor";
 import {
   AddGuestButton,
   AllowGuestsToggle,
   RemoveGuestButton,
-  RemovePlayerButton,
 } from "./_guest-controls";
 
 export default async function GameDetailPage({
@@ -68,14 +71,32 @@ export default async function GameDetailPage({
   // for a legacy null-group game), not a hardcoded Europe/London.
   const tz = game.group?.timezone ?? LONDON_TZ;
 
+  // Admins can hand-add any group member who isn't already in the game (signups
+  // here already exclude drop-outs, so a previously-dropped player can be re-added).
+  let addablePlayers: AddablePlayer[] = [];
+  if (isAdmin && game.status === GameStatus.OPEN && game.groupId) {
+    const inGame = new Set(game.signups.map((s) => s.user.id));
+    const members = await getGroupMembers(game.groupId);
+    addablePlayers = members
+      .map((m) => m.user)
+      .filter((u) => !inGame.has(u.id))
+      .map((u) => ({
+        id: u.id,
+        name: u.name,
+        preferredPosition: u.preferredPosition,
+      }));
+  }
+
   // +1 guests count as bodies on the pitch, so the roster (and "more needed")
   // is members + guests.
   const guests = game.guests;
   const rosterCount = confirmed.length + guests.length;
   const amConfirmed = mySignup?.status === SignupStatus.CONFIRMED;
+  // +1s can be added while the game is OPEN (within the deadline) and once it's
+  // LOCKED — a locked +1 back-fills a drop-out and slots into the teams.
   const canAddGuest =
-    game.status === GameStatus.OPEN &&
-    signupsOpen &&
+    ((game.status === GameStatus.OPEN && signupsOpen) ||
+      game.status === GameStatus.LOCKED) &&
     game.allowGuests &&
     amConfirmed &&
     rosterCount < MAX_PLAYERS;
@@ -250,7 +271,12 @@ export default async function GameDetailPage({
           <AdminCancelCard gameId={game.id} status={game.status} />
         )}
 
-      {game.status === GameStatus.OPEN && signupsOpen && (
+      {/* Join / position controls: while the game is OPEN (and within the
+          deadline), and — for late joiners back-filling a drop-out — once it's
+          LOCKED, for anyone not already confirmed. Confirmed players on a LOCKED
+          game get the DropOutCard instead. */}
+      {((game.status === GameStatus.OPEN && signupsOpen) ||
+        (game.status === GameStatus.LOCKED && !amConfirmed)) && (
         <SignupControls
           gameId={game.id}
           mySignup={
@@ -263,7 +289,7 @@ export default async function GameDetailPage({
               : null
           }
           preferredPosition={user.preferredPosition ?? null}
-          confirmedCount={confirmed.length}
+          confirmedCount={rosterCount}
           maxPlayers={MAX_PLAYERS}
         />
       )}
@@ -277,8 +303,14 @@ export default async function GameDetailPage({
       )}
 
       {game.status === GameStatus.OPEN && isAdmin && (
-        <AllowGuestsToggle gameId={game.id} allow={game.allowGuests} />
+        <AddPlayerCard gameId={game.id} candidates={addablePlayers} />
       )}
+
+      {(game.status === GameStatus.OPEN ||
+        game.status === GameStatus.LOCKED) &&
+        isAdmin && (
+          <AllowGuestsToggle gameId={game.id} allow={game.allowGuests} />
+        )}
 
       {game.status === GameStatus.BOOKED && isBooker && (
         <Card>
@@ -354,16 +386,16 @@ export default async function GameDetailPage({
               image={s.user.image}
               position={s.position}
               trailing={
-                // Admins can remove any player (except themselves) while the
-                // game is live — this pulls them off the roster and the teams,
-                // unlike the payments-only no-show removal.
+                // Admins can remove any player (except themselves) — this pulls
+                // them off the roster and the teams, unlike the payments-only
+                // no-show removal. Server-side it no-ops on a finished game.
                 isAdmin &&
-                s.userId !== user.id &&
+                s.user.id !== user.id &&
                 game.status !== GameStatus.COMPLETED &&
                 game.status !== GameStatus.CANCELLED ? (
                   <RemovePlayerButton
                     gameId={game.id}
-                    userId={s.userId}
+                    userId={s.user.id}
                     name={s.user.name}
                   />
                 ) : undefined
@@ -405,8 +437,17 @@ export default async function GameDetailPage({
                 image={s.user.image}
                 position={s.position}
                 trailing={
-                  <span className="text-xs text-muted-foreground">
-                    #{s.waitlistPosition}
+                  <span className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground">
+                      #{s.waitlistPosition}
+                    </span>
+                    {isAdmin && (
+                      <RemovePlayerButton
+                        gameId={game.id}
+                        userId={s.user.id}
+                        name={s.user.name}
+                      />
+                    )}
                   </span>
                 }
               />

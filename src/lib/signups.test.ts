@@ -1,228 +1,370 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { SignupStatus, Position } from "@/generated/prisma/enums";
 
-// serializableTx just runs the callback against our mock tx, so joinGame's
-// transactional body is exercised directly. promoteWaitlist takes a `tx`, so we
-// pass the same mock in by hand.
-const { tx, serializableTx } = vi.hoisted(() => {
+// A single shared mock transaction client, driven through prisma.$transaction
+// (serializableTx just forwards to it). Each test wires up the reads it needs.
+const { tx, prisma } = vi.hoisted(() => {
   const tx = {
     game: { findUnique: vi.fn(), update: vi.fn() },
     signup: {
       findUnique: vi.fn(),
-      findFirst: vi.fn(),
-      findMany: vi.fn(),
-      count: vi.fn(),
       update: vi.fn(),
       create: vi.fn(),
+      count: vi.fn(),
+      findFirst: vi.fn(),
+      findMany: vi.fn(),
     },
-    guest: { count: vi.fn(), deleteMany: vi.fn() },
+    guest: {
+      deleteMany: vi.fn(),
+      count: vi.fn(),
+      findMany: vi.fn(),
+      create: vi.fn(),
+    },
     groupMember: { findMany: vi.fn() },
+    teamPlayer: { findFirst: vi.fn(), update: vi.fn(), delete: vi.fn() },
     team: { deleteMany: vi.fn(), create: vi.fn() },
-    teamPlayer: { deleteMany: vi.fn() },
   };
   return {
     tx,
-    serializableTx: vi.fn(
-      async (fn: (t: typeof tx) => unknown) => fn(tx),
-    ),
+    prisma: {
+      $transaction: vi.fn(async (fn: (t: typeof tx) => unknown) => fn(tx)),
+    },
   };
 });
-vi.mock("@/lib/db", () => ({ serializableTx }));
+vi.mock("@/lib/db", () => ({ prisma }));
 
-import { promoteWaitlist, joinGame, leaveGame } from "@/lib/signups";
+import { addGuest, joinGame, leaveGame } from "@/lib/signups";
+
+const TEN_OTHERS = [
+  "u-booker",
+  "u-bibs",
+  "u-foot",
+  "u-wait",
+  "u5",
+  "u6",
+  "u7",
+  "u8",
+  "u9",
+  "u10",
+].map((userId) => ({ userId }));
 
 beforeEach(() => {
   vi.clearAllMocks();
+  tx.game.findUnique.mockResolvedValue({
+    id: "g1",
+    status: "LOCKED",
+    groupId: "grp1",
+    bookerId: "u-booker",
+    bibsUserId: "u-bibs",
+    footballUserId: "u-foot",
+    kickoffAt: new Date("2026-06-14T11:00:00Z"),
+  });
+  tx.signup.findUnique.mockResolvedValue({
+    id: "s-drop",
+    userId: "u-drop",
+    status: "CONFIRMED",
+  });
+  tx.guest.deleteMany.mockResolvedValue({ count: 0 });
+  tx.guest.count.mockResolvedValue(0);
+  tx.groupMember.findMany.mockResolvedValue([]); // nobody exempt
+  tx.signup.update.mockResolvedValue({});
+  tx.game.update.mockResolvedValue({});
+  tx.teamPlayer.update.mockResolvedValue({});
+  tx.teamPlayer.delete.mockResolvedValue({});
 });
 
-// Distinguish the CONFIRMED vs WAITLIST signup.count calls by their filter.
-function countBy(confirmed: number, waitlist: number) {
-  tx.signup.count.mockImplementation(
-    ({ where }: { where: { status: SignupStatus } }) =>
-      where.status === SignupStatus.CONFIRMED
-        ? Promise.resolve(confirmed)
-        : Promise.resolve(waitlist),
-  );
-}
-
-describe("promoteWaitlist", () => {
-  it("promotes one waitlister into a single freed slot and renumbers the rest", async () => {
-    // 14 confirmed + 0 guests = 1 free slot.
-    tx.signup.count.mockResolvedValue(14);
-    tx.guest.count.mockResolvedValue(0);
+describe("leaveGame — locked game, waitlister available", () => {
+  beforeEach(() => {
+    // One waitlister waiting to come in.
+    tx.signup.findFirst.mockResolvedValue({ id: "sw1", userId: "u-wait" });
     tx.signup.findMany
-      // waitlisters to promote (take: 1)
-      .mockResolvedValueOnce([{ id: "w1", userId: "u1", waitlistPosition: 1 }])
-      // remaining waitlist to renumber
-      .mockResolvedValueOnce([{ id: "w2", userId: "u2", waitlistPosition: 2 }]);
-
-    const promoted = await promoteWaitlist(tx as never, "g1");
-
-    expect(promoted).toEqual(["u1"]);
-    // w1 confirmed...
-    expect(tx.signup.update).toHaveBeenCalledWith({
-      where: { id: "w1" },
-      data: { status: SignupStatus.CONFIRMED, waitlistPosition: null },
-    });
-    // ...and the trailing waitlister renumbered from #2 to #1 (no gap).
-    expect(tx.signup.update).toHaveBeenCalledWith({
-      where: { id: "w2" },
-      data: { waitlistPosition: 1 },
+      .mockResolvedValueOnce([]) // remaining waitlist (none left after promotion)
+      .mockResolvedValueOnce(TEN_OTHERS); // confirmed squad, still 10
+    // The dropped player's existing team slot.
+    tx.teamPlayer.findFirst.mockResolvedValue({
+      id: "tp-drop",
+      team: { label: "A" },
     });
   });
 
-  it("fills every slot a host freed by dropping with +1s (multi-promote)", async () => {
-    // 12 confirmed + 0 guests = 3 free slots (a host with 2 +1s just left).
-    tx.signup.count.mockResolvedValue(12);
-    tx.guest.count.mockResolvedValue(0);
-    tx.signup.findMany
-      .mockResolvedValueOnce([
-        { id: "w1", userId: "u1", waitlistPosition: 1 },
-        { id: "w2", userId: "u2", waitlistPosition: 2 },
-        { id: "w3", userId: "u3", waitlistPosition: 3 },
-      ])
-      .mockResolvedValueOnce([]); // nobody left waiting
+  it("slots the promoted player into the dropped player's exact team", async () => {
+    const out = await leaveGame("g1", "u-drop");
 
-    const promoted = await promoteWaitlist(tx as never, "g1");
-    expect(promoted).toEqual(["u1", "u2", "u3"]);
-    // findMany for promotion was asked for exactly the free-slot count.
-    expect(tx.signup.findMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ take: 3 }),
-    );
-  });
-
-  it("promotes nobody when the roster is still full, but still renumbers", async () => {
-    // 15 confirmed = 0 free slots.
-    tx.signup.count.mockResolvedValue(15);
-    tx.guest.count.mockResolvedValue(0);
-    // Only the renumber findMany runs (no promotion findMany).
-    tx.signup.findMany.mockResolvedValueOnce([
-      { id: "w2", userId: "u2", waitlistPosition: 2 },
-      { id: "w3", userId: "u3", waitlistPosition: 3 },
-    ]);
-
-    const promoted = await promoteWaitlist(tx as never, "g1");
-    expect(promoted).toEqual([]);
-    // #2 → #1 and #3 → #2 (the gap left by a departed #1 is closed).
-    expect(tx.signup.update).toHaveBeenCalledWith({
-      where: { id: "w2" },
-      data: { waitlistPosition: 1 },
+    expect(out.promotedUserId).toBe("u-wait");
+    expect(out.promotedTeamLabel).toBe("A");
+    // Targeted swap, not a full rebuild.
+    expect(tx.teamPlayer.update).toHaveBeenCalledWith({
+      where: { id: "tp-drop" },
+      data: { userId: "u-wait" },
     });
-    expect(tx.signup.update).toHaveBeenCalledWith({
-      where: { id: "w3" },
-      data: { waitlistPosition: 2 },
-    });
+    expect(out.teamsRegenerated).toBe(false);
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
   });
 });
 
-describe("joinGame — queue fairness", () => {
-  const futureKickoff = new Date("2030-06-09T11:00:00Z");
-  function openGame() {
-    return {
-      id: "g1",
-      status: "OPEN",
-      kickoffAt: futureKickoff,
-      group: { lockOffsetHours: 48 },
-    };
-  }
-
-  it("waitlists a newcomer when a waitlist already exists, even with a free slot", async () => {
-    tx.game.findUnique.mockResolvedValue(openGame());
-    tx.signup.findUnique.mockResolvedValue(null); // brand-new joiner
-    tx.guest.count.mockResolvedValue(0);
-    // Room on paper (10/15) BUT someone is already waiting — the newcomer must
-    // queue behind them, not slip into the transient gap.
-    countBy(10, 1);
-
-    const r = await joinGame("g1", "newbie", Position.MID);
-    expect(r).toEqual({ kind: "WAITLIST", position: 2 });
-    expect(tx.signup.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          status: SignupStatus.WAITLIST,
-          waitlistPosition: 2,
-        }),
-      }),
-    );
-  });
-
-  it("confirms a newcomer when there's room and nobody waiting", async () => {
-    tx.game.findUnique.mockResolvedValue(openGame());
-    tx.signup.findUnique.mockResolvedValue(null);
-    tx.guest.count.mockResolvedValue(0);
-    countBy(9, 0);
-
-    const r = await joinGame("g1", "newbie", Position.MID);
-    expect(r).toEqual({ kind: "CONFIRMED" });
-    expect(tx.signup.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({ status: SignupStatus.CONFIRMED }),
-      }),
-    );
-  });
-
-  it("waitlists a newcomer when the roster is full", async () => {
-    tx.game.findUnique.mockResolvedValue(openGame());
-    tx.signup.findUnique.mockResolvedValue(null);
-    tx.guest.count.mockResolvedValue(0);
-    countBy(15, 0);
-
-    const r = await joinGame("g1", "newbie", Position.MID);
-    expect(r).toEqual({ kind: "WAITLIST", position: 1 });
-  });
-
-  it("is idempotent for an existing waitlister (updates position, stays waitlisted)", async () => {
-    tx.game.findUnique.mockResolvedValue(openGame());
-    tx.signup.findUnique.mockResolvedValue({
-      id: "s1",
-      status: SignupStatus.WAITLIST,
-      waitlistPosition: 2,
-    });
-
-    const r = await joinGame("g1", "u1", Position.FWD);
-    expect(r).toEqual({ kind: "WAITLIST", position: 2 });
-    // Only the position is touched — no re-confirm, no new row.
-    expect(tx.signup.update).toHaveBeenCalledWith({
-      where: { id: "s1" },
-      data: { position: Position.FWD },
-    });
-    expect(tx.signup.create).not.toHaveBeenCalled();
-  });
-});
-
-describe("leaveGame — drop-out cleanup", () => {
-  it("keeps the leaver's +1 but pulls them off their team (BOOKED game)", async () => {
+describe("leaveGame — booked game, waitlister available", () => {
+  beforeEach(() => {
     tx.game.findUnique.mockResolvedValue({
       id: "g1",
       status: "BOOKED",
       groupId: "grp1",
-      bookerId: "someone-else",
+      bookerId: "u-booker",
+      bibsUserId: "u-bibs",
+      footballUserId: "u-foot",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
     });
-    tx.signup.findUnique.mockResolvedValue({
-      id: "s1",
-      status: SignupStatus.CONFIRMED,
+    // One waitlister waiting to come in.
+    tx.signup.findFirst.mockResolvedValue({ id: "sw1", userId: "u-wait" });
+    tx.signup.findMany.mockResolvedValue([]); // remaining waitlist (none left)
+    // The dropped player's existing team slot.
+    tx.teamPlayer.findFirst.mockResolvedValue({
+      id: "tp-drop",
+      team: { label: "B" },
     });
-    // promoteWaitlist internals: roster still full-ish, nobody waiting.
-    tx.signup.count.mockResolvedValue(14);
-    tx.guest.count.mockResolvedValue(1);
-    tx.signup.findMany.mockResolvedValue([]); // no waitlist
+  });
 
-    const outcome = await leaveGame("g1", "u1");
+  it("slots the promoted player into the dropped player's team without touching duties", async () => {
+    const out = await leaveGame("g1", "u-drop");
 
-    // Marked dropped out...
-    expect(tx.signup.update).toHaveBeenCalledWith({
-      where: { id: "s1" },
-      data: { status: SignupStatus.DROPPED_OUT, waitlistPosition: null },
+    expect(out.promotedUserId).toBe("u-wait");
+    expect(out.promotedTeamLabel).toBe("B");
+    // Targeted swap into the freed slot.
+    expect(tx.teamPlayer.update).toHaveBeenCalledWith({
+      where: { id: "tp-drop" },
+      data: { userId: "u-wait" },
     });
-    // ...their team slot removed so their name comes off the lineup...
-    expect(tx.teamPlayer.deleteMany).toHaveBeenCalledWith({
-      where: { userId: "u1", team: { gameId: "g1" } },
-    });
-    // ...but their +1 is NOT deleted — it stays and gets billed to them.
-    expect(tx.guest.deleteMany).not.toHaveBeenCalled();
-    // BOOKED game: teams aren't regenerated.
+    // The booking/duties are already settled — leave them alone.
+    expect(out.newBookerId).toBeNull();
+    expect(out.newBibsUserId).toBeNull();
+    expect(out.newFootballUserId).toBeNull();
+    expect(out.teamsRegenerated).toBe(false);
     expect(tx.team.deleteMany).not.toHaveBeenCalled();
-    expect(outcome.status).toBe("BOOKED");
+    expect(tx.team.create).not.toHaveBeenCalled();
+    expect(out.status).toBe("BOOKED");
+  });
+});
+
+describe("leaveGame — booked game, no waitlister", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "BOOKED",
+      groupId: "grp1",
+      bookerId: "u-booker",
+      bibsUserId: "u-bibs",
+      footballUserId: "u-foot",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+    });
+    tx.signup.findFirst.mockResolvedValue(null); // nobody waiting
+    tx.signup.findMany.mockResolvedValue([]); // remaining waitlist (none)
+    // The dropped player's existing team slot.
+    tx.teamPlayer.findFirst.mockResolvedValue({
+      id: "tp-drop",
+      team: { label: "B" },
+    });
+  });
+
+  it("vacates the dropped player's team slot and leaves the rest alone", async () => {
+    const out = await leaveGame("g1", "u-drop");
+
+    expect(out.promotedUserId).toBeNull();
+    // The dropped player is pulled out of their team, leaving the slot open.
+    expect(tx.teamPlayer.delete).toHaveBeenCalledWith({
+      where: { id: "tp-drop" },
+    });
+    expect(tx.teamPlayer.update).not.toHaveBeenCalled();
+    // Booking/duties already settled — untouched, and no full rebuild.
+    expect(out.newBookerId).toBeNull();
+    expect(out.teamsRegenerated).toBe(false);
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
+    expect(out.status).toBe("BOOKED");
+  });
+});
+
+// Eleven confirmed signups with a skill score — enough for regenerateTeams to
+// rebuild the sides (it needs at least MIN_PLAYERS).
+const ELEVEN_CONFIRMED = Array.from({ length: 11 }, (_, i) => ({
+  userId: `u${i}`,
+  position: "MID",
+  user: { id: `u${i}`, skillScore: 3 },
+}));
+
+describe("joinGame — locked game with a freed spot", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "LOCKED",
+      groupId: "grp1",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    tx.signup.findUnique.mockResolvedValue(null); // brand-new signup
+    tx.signup.count.mockResolvedValue(10); // 10 confirmed, below MAX (15)
+    tx.guest.count.mockResolvedValue(0);
+    tx.signup.create.mockResolvedValue({});
+    // regenerateTeams reads the (now 11-strong) confirmed squad + guests.
+    tx.signup.findMany.mockResolvedValue(ELEVEN_CONFIRMED);
+    tx.guest.findMany.mockResolvedValue([]);
+  });
+
+  it("confirms the late joiner and rebuilds the teams", async () => {
+    const r = await joinGame("g1", "u-new", "MID");
+
+    expect(r).toEqual({ kind: "CONFIRMED" });
+    expect(tx.signup.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "CONFIRMED" }),
+      }),
+    );
+    // Teams are wiped + regenerated so the new player is slotted in.
+    expect(tx.team.deleteMany).toHaveBeenCalledWith({ where: { gameId: "g1" } });
+    expect(tx.team.create).toHaveBeenCalled();
+  });
+});
+
+describe("joinGame — locked game that's already full", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "LOCKED",
+      groupId: "grp1",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    tx.signup.findUnique.mockResolvedValue(null);
+    // First count = CONFIRMED (15, full); second = WAITLIST (none yet).
+    tx.signup.count.mockResolvedValueOnce(15).mockResolvedValueOnce(0);
+    tx.guest.count.mockResolvedValue(0);
+    tx.signup.create.mockResolvedValue({});
+  });
+
+  it("puts the joiner on the waitlist and leaves the teams alone", async () => {
+    const r = await joinGame("g1", "u-new", "MID");
+
+    expect(r).toEqual({ kind: "WAITLIST", position: 1 });
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("joinGame — booked game stays closed", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "BOOKED",
+      groupId: "grp1",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+  });
+
+  it("rejects the signup once the game is booked", async () => {
+    const r = await joinGame("g1", "u-new", "MID");
+
+    expect(r).toEqual({ kind: "GAME_LOCKED" });
+    expect(tx.signup.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("addGuest — locked game with a freed spot", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "LOCKED",
+      groupId: "grp1",
+      allowGuests: true,
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    tx.signup.findUnique.mockResolvedValue({ status: "CONFIRMED" }); // host
+    tx.signup.count.mockResolvedValue(10);
+    tx.guest.count.mockResolvedValue(0);
+    tx.guest.create.mockResolvedValue({});
+    tx.signup.findMany.mockResolvedValue(ELEVEN_CONFIRMED);
+    tx.guest.findMany.mockResolvedValue([]);
+  });
+
+  it("adds the +1 and rebuilds the teams", async () => {
+    const r = await addGuest("g1", "host1");
+
+    expect(r).toEqual({ kind: "ADDED" });
+    expect(tx.guest.create).toHaveBeenCalledWith({
+      data: { gameId: "g1", hostUserId: "host1" },
+    });
+    expect(tx.team.deleteMany).toHaveBeenCalledWith({ where: { gameId: "g1" } });
+    expect(tx.team.create).toHaveBeenCalled();
+  });
+
+  it("refuses once the squad is full", async () => {
+    tx.guest.count.mockResolvedValue(5); // 10 + 5 = 15 = MAX
+    const r = await addGuest("g1", "host1");
+    expect(r).toEqual({ kind: "FULL" });
+    expect(tx.guest.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses a host who isn't a confirmed player", async () => {
+    tx.signup.findUnique.mockResolvedValue({ status: "WAITLIST" });
+    const r = await addGuest("g1", "host1");
+    expect(r).toEqual({ kind: "NOT_CONFIRMED" });
+    expect(tx.guest.create).not.toHaveBeenCalled();
+  });
+
+  it("refuses when guests aren't enabled", async () => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "LOCKED",
+      groupId: "grp1",
+      allowGuests: false,
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    const r = await addGuest("g1", "host1");
+    expect(r).toEqual({ kind: "GUESTS_DISABLED" });
+    expect(tx.guest.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("addGuest — booked game stays closed", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "BOOKED",
+      groupId: "grp1",
+      allowGuests: true,
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+  });
+
+  it("rejects the +1 once the game is booked", async () => {
+    const r = await addGuest("g1", "host1");
+    expect(r).toEqual({ kind: "GAME_LOCKED" });
+    expect(tx.guest.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("leaveGame — locked game falls below the minimum", () => {
+  beforeEach(() => {
+    tx.signup.findFirst.mockResolvedValue(null); // no waitlist
+    tx.signup.findMany
+      .mockResolvedValueOnce([]) // remaining waitlist
+      .mockResolvedValueOnce(TEN_OTHERS.slice(0, 9)); // only 9 left
+  });
+
+  it("reopens the game and clears teams + duties", async () => {
+    const out = await leaveGame("g1", "u-drop");
+
+    expect(out.revertedToOpen).toBe(true);
+    expect(out.status).toBe("OPEN");
+    expect(tx.team.deleteMany).toHaveBeenCalledWith({ where: { gameId: "g1" } });
+    expect(tx.game.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: "OPEN",
+          bookerId: null,
+        }),
+      }),
+    );
   });
 });

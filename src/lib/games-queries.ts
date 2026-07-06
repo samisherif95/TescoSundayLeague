@@ -140,6 +140,23 @@ export const getGameWithDetail = cache((id: string) => {
   });
 });
 
+/**
+ * Lean roster of a group — id, name, preferred position — ordered by name. Feeds
+ * the admin "add a player" picker on the game page (the caller filters out
+ * anyone already in the game).
+ */
+export const getGroupMembers = cache((groupId: string) => {
+  return prisma.groupMember.findMany({
+    where: { groupId },
+    orderBy: { user: { name: "asc" } },
+    select: {
+      user: {
+        select: { id: true, name: true, preferredPosition: true },
+      },
+    },
+  });
+});
+
 // Lighter include for the history list: just enough to summarise each game
 // (per-match scores + scorers). No signups/payments — those are detail-only.
 const historyInclude = {
@@ -189,5 +206,73 @@ export const getGameHistory = cache(
     },
     orderBy: { kickoffAt: "desc" },
     include: historyInclude,
+  });
+});
+
+/**
+ * Every credited, non-own goal scored across a group's COMPLETED games — the
+ * raw rows the leaderboard ranks (see `buildLeaderboard`). Own goals and
+ * anonymous goals are filtered in SQL so we only ship rows that can be tallied.
+ */
+export const getGroupScorerGoals = cache((groupId: string) => {
+  return prisma.goal.findMany({
+    where: {
+      isOwnGoal: false,
+      scorerId: { not: null },
+      match: { game: { groupId, status: GameStatus.COMPLETED } },
+    },
+    select: {
+      scorerId: true,
+      isOwnGoal: true,
+      scorer: { select: { id: true, name: true, image: true } },
+    },
+  });
+});
+
+/**
+ * Every member of a group with their current peer rating (`skillScore`) and how
+ * many ratings it's built from — the rows the ratings board ranks (see
+ * `buildRatingsBoard`). `ratingsReceived` is counted, never listed, so no
+ * individual rater is exposed.
+ */
+export const getGroupRatingMembers = cache((groupId: string) => {
+  return prisma.groupMember.findMany({
+    where: { groupId },
+    select: {
+      user: {
+        select: {
+          id: true,
+          name: true,
+          image: true,
+          preferredPosition: true,
+          skillScore: true,
+          _count: { select: { ratingsReceived: true } },
+        },
+      },
+    },
+  });
+});
+
+/**
+ * Every COMPLETED game in a group with its full rating rows — rater INCLUDED.
+ * This deliberately breaches the "raterId is never exposed" rule and must only
+ * ever feed the owner-gated audit page (see `canViewRatingsAudit`); never call
+ * it from a member-facing route.
+ */
+export const getGroupRatingsAudit = cache((groupId: string) => {
+  return prisma.game.findMany({
+    where: { groupId, status: GameStatus.COMPLETED },
+    orderBy: { kickoffAt: "desc" },
+    select: {
+      id: true,
+      kickoffAt: true,
+      ratings: {
+        select: {
+          score: true,
+          rater: { select: { id: true, name: true, image: true } },
+          ratee: { select: { id: true, name: true, image: true } },
+        },
+      },
+    },
   });
 });
