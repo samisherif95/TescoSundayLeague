@@ -50,12 +50,18 @@ export async function signUpWithEmail(formData: FormData) {
 
   const existing = await prisma.user.findUnique({
     where: { email },
-    select: { id: true },
+    select: { passwordHash: true, emailVerified: true },
   });
   if (existing) {
-    return {
-      error: "An account with this email already exists. Try logging in.",
-    };
+    // Enumeration-safe: respond exactly as we do for a brand-new signup rather
+    // than confirming the email is registered (which turned this form into a
+    // member-list oracle). If it's an unverified credentials account, resend the
+    // verification so the real owner can still finish signing up; otherwise stay
+    // silent. Either way the caller sees the same "check your inbox" state.
+    if (existing.passwordHash && !existing.emailVerified) {
+      await sendVerificationEmail(email);
+    }
+    return { pendingVerification: true, email };
   }
 
   const passwordHash = await bcrypt.hash(password, 10);

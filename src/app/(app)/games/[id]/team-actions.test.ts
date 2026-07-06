@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock the layers the action depends on (auth, DB, cache revalidation).
 const { db, authorizeAdmin } = vi.hoisted(() => ({
   db: {
+    game: { findUnique: vi.fn() },
     team: { findFirst: vi.fn() },
     teamPlayer: { findFirst: vi.fn(), update: vi.fn() },
   },
@@ -19,6 +20,7 @@ const valid = { gameId: "g1", teamPlayerId: "tp1", toTeamId: "teamB" };
 beforeEach(() => {
   vi.clearAllMocks();
   authorizeAdmin.mockResolvedValue({ userId: "admin1" });
+  db.game.findUnique.mockResolvedValue({ status: "LOCKED" });
   db.team.findFirst.mockResolvedValue({ id: "teamB" });
   db.teamPlayer.findFirst.mockResolvedValue({ id: "tp1", teamId: "teamA" });
 });
@@ -40,6 +42,13 @@ describe("moveTeamPlayerAction — admin gate", () => {
     });
     expect(r).toEqual({ error: "Invalid input" });
     expect(authorizeAdmin).not.toHaveBeenCalled();
+  });
+
+  it("refuses to move players once the game is finished", async () => {
+    db.game.findUnique.mockResolvedValue({ status: "COMPLETED" });
+    const r = await moveTeamPlayerAction(valid);
+    expect(r).toMatchObject({ error: expect.stringMatching(/finished/i) });
+    expect(db.teamPlayer.update).not.toHaveBeenCalled();
   });
 });
 

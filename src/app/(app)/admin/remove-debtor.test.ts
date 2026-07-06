@@ -19,9 +19,9 @@ function game(overrides = {}) {
   return {
     bookerId: "u-booker",
     paymentRequests: [
-      { debtorId: "u1" },
-      { debtorId: "u2" },
-      { debtorId: "u3" },
+      { debtorId: "u1", paidStatus: "UNPAID" },
+      { debtorId: "u2", paidStatus: "UNPAID" },
+      { debtorId: "u3", paidStatus: "UNPAID" },
     ],
     ...overrides,
   };
@@ -59,5 +59,19 @@ describe("removeDebtorAction", () => {
     setBilledMembers.mockResolvedValue({ ok: false, error: "no cost" });
     const r = await removeDebtorAction("g1", "u1");
     expect(r).toEqual({ error: "no cost" });
+  });
+
+  it("refuses to remove a debtor who's already paid", async () => {
+    db.game.findUnique.mockResolvedValue(
+      game({
+        paymentRequests: [
+          { debtorId: "u1", paidStatus: "MARKED_PAID" },
+          { debtorId: "u2", paidStatus: "UNPAID" },
+        ],
+      }),
+    );
+    const r = await removeDebtorAction("g1", "u1");
+    expect(r).toMatchObject({ error: expect.stringMatching(/already paid/i) });
+    expect(setBilledMembers).not.toHaveBeenCalled();
   });
 });

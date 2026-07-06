@@ -23,10 +23,19 @@ import { cancelGameAction } from "@/app/(app)/admin/actions";
  * etc.). Confirms first, since it notifies the whole squad and can't be undone.
  * Shown on any game that isn't already finished or cancelled.
  */
-export function AdminCancelCard({ gameId }: { gameId: string }) {
+export function AdminCancelCard({
+  gameId,
+  status,
+}: {
+  gameId: string;
+  status: string;
+}) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, start] = useTransition();
+  // Once a game is BOOKED the booker has already paid the pitch on their card —
+  // cancelling won't refund them, and no split is generated, so warn explicitly.
+  const bookerHasPaid = status === "BOOKED";
 
   return (
     <Card className="border-destructive/30 bg-destructive/5">
@@ -54,6 +63,14 @@ export function AdminCancelCard({ gameId }: { gameId: string }) {
                 This marks the game cancelled and notifies everyone who signed
                 up. It can&apos;t be undone — you&apos;d need to open a fresh
                 game.
+                {bookerHasPaid && (
+                  <span className="mt-2 block font-medium text-destructive">
+                    Heads up: the pitch is already booked and paid for on the
+                    booker&apos;s card. Cancelling won&apos;t generate a payment
+                    split or refund them — sort that out with the booker
+                    directly.
+                  </span>
+                )}
               </DialogDescription>
             </DialogHeader>
             <DialogFooter>

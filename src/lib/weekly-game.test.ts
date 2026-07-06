@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { GameStatus } from "@/generated/prisma/enums";
 
 // Mock the layers openWeeklyGame depends on (DB, email, push). env is real —
 // we only read env.appUrl, which has a safe default.
@@ -13,7 +12,10 @@ const { db, sendEmail, sendPushToUsers } = vi.hoisted(() => ({
   sendPushToUsers: vi.fn(),
 }));
 vi.mock("@/lib/db", () => ({ prisma: db }));
-vi.mock("@/lib/email", () => ({ sendEmail }));
+vi.mock("@/lib/email", () => ({
+  sendEmail,
+  escapeHtml: (s: string | null | undefined) => String(s ?? ""),
+}));
 vi.mock("@/lib/push", () => ({ sendPushToUsers }));
 
 import { openWeeklyGame } from "@/lib/weekly-game";

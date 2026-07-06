@@ -4,13 +4,19 @@ import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
 // Mock the layers the action + shared completer depend on (auth, DB, email,
 // cache revalidation).
 const { db, requireAdmin, sendEmail } = vi.hoisted(() => ({
-  db: { game: { findUnique: vi.fn(), update: vi.fn() } },
+  db: {
+    game: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() },
+    match: { findMany: vi.fn(), update: vi.fn() },
+  },
   requireAdmin: vi.fn(),
   sendEmail: vi.fn(),
 }));
 vi.mock("@/lib/db", () => ({ prisma: db }));
 vi.mock("@/lib/session", () => ({ requireGameAdmin: requireAdmin }));
-vi.mock("@/lib/email", () => ({ sendEmail }));
+vi.mock("@/lib/email", () => ({
+  sendEmail,
+  escapeHtml: (s: string | null | undefined) => String(s ?? ""),
+}));
 // completeGame generates the payment split on completion — stubbed here so the
 // status + rating-email behaviour is tested in isolation (split maths lives in
 // payments.test.ts).
@@ -41,6 +47,11 @@ beforeEach(() => {
   sendEmail.mockResolvedValue(undefined);
   db.game.findUnique.mockResolvedValue(bookedGame());
   db.game.update.mockResolvedValue({});
+  // Conditional completion flip: 1 row = the game was still locked/booked.
+  db.game.updateMany.mockResolvedValue({ count: 1 });
+  // No matches left in flight by default (settling covered separately).
+  db.match.findMany.mockResolvedValue([]);
+  db.match.update.mockResolvedValue({});
 });
 
 describe("endGameAction — guards", () => {
@@ -75,10 +86,15 @@ describe("endGameAction — happy path", () => {
   it("completes a BOOKED game and emails members with an address", async () => {
     const r = await endGameAction("g1");
     expect(r).toEqual({ ok: true });
-    expect(db.game.update).toHaveBeenCalledWith({
-      where: { id: "g1" },
-      data: { status: GameStatus.COMPLETED },
-    });
+    expect(db.game.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: "g1",
+          status: { in: [GameStatus.BOOKED, GameStatus.LOCKED] },
+        },
+        data: expect.objectContaining({ status: GameStatus.COMPLETED }),
+      }),
+    );
     // Only the member with an email gets the rating link.
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(sendEmail).toHaveBeenCalledWith(
@@ -92,9 +108,14 @@ describe("endGameAction — happy path", () => {
     );
     const r = await endGameAction("g1");
     expect(r).toEqual({ ok: true });
-    expect(db.game.update).toHaveBeenCalledWith({
-      where: { id: "g1" },
-      data: { status: GameStatus.COMPLETED },
-    });
+    expect(db.game.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          id: "g1",
+          status: { in: [GameStatus.BOOKED, GameStatus.LOCKED] },
+        },
+        data: expect.objectContaining({ status: GameStatus.COMPLETED }),
+      }),
+    );
   });
 });

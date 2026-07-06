@@ -2,8 +2,13 @@
 
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
-import { prisma } from "@/lib/db";
-import { MatchPhase, MatchStatus } from "@/generated/prisma/enums";
+import { prisma, serializableTx } from "@/lib/db";
+import {
+  GameStatus,
+  MatchPhase,
+  MatchStatus,
+  SignupStatus,
+} from "@/generated/prisma/enums";
 import { deriveScore, elapsedMs, reachedGoalTarget } from "@/lib/match";
 import { authorizeBookingMember } from "@/lib/booking-access";
 
@@ -15,7 +20,7 @@ const authorizeRecorder = authorizeBookingMember;
 
 function revalidateGame(gameId: string) {
   revalidatePath(`/games/${gameId}`);
-  revalidatePath("/");
+  revalidatePath("/home");
 }
 
 const createSchema = z.object({
@@ -38,46 +43,81 @@ export async function createMatchAction(
   const auth = await authorizeRecorder(gameId);
   if ("error" in auth) return auth;
 
-  // Only one match in flight at a time — finish the current one first.
-  const active = await prisma.match.findFirst({
-    where: { gameId, status: { not: MatchStatus.COMPLETED } },
-    select: { id: true },
-  });
-  if (active) return { error: "Finish the current match first" };
-
   const teams = await prisma.team.findMany({
     where: { gameId, id: { in: [homeTeamId, awayTeamId] } },
     select: { id: true },
   });
   if (teams.length !== 2) return { error: "Those teams aren't in this game" };
 
-  const count = await prisma.match.count({ where: { gameId } });
-  const now = new Date();
-  await prisma.match.create({
-    data: {
-      gameId,
-      order: count + 1,
-      homeTeamId,
-      awayTeamId,
-      status: MatchStatus.LIVE,
-      phase: MatchPhase.REGULAR,
-      periodStartedAt: now,
-      startedAt: now,
-    },
+  // Serializable so two people tapping "Start a match" together can't create two
+  // live matches or collide on `order` — the loser retries, sees the first
+  // match, and bails on the active-match check. `max(order)+1` (not count+1)
+  // avoids reusing an order freed by a deleted match.
+  const result = await serializableTx(async (tx) => {
+    const game = await tx.game.findUnique({
+      where: { id: gameId },
+      select: { status: true },
+    });
+    if (game?.status !== GameStatus.BOOKED) {
+      return {
+        error: "Matches can only be started while the game is in play.",
+      };
+    }
+    // Only one match in flight at a time — finish the current one first.
+    const active = await tx.match.findFirst({
+      where: { gameId, status: { not: MatchStatus.COMPLETED } },
+      select: { id: true },
+    });
+    if (active) return { error: "Finish the current match first" };
+
+    const last = await tx.match.aggregate({
+      where: { gameId },
+      _max: { order: true },
+    });
+    const now = new Date();
+    await tx.match.create({
+      data: {
+        gameId,
+        order: (last._max.order ?? 0) + 1,
+        homeTeamId,
+        awayTeamId,
+        status: MatchStatus.LIVE,
+        phase: MatchPhase.REGULAR,
+        periodStartedAt: now,
+        startedAt: now,
+      },
+    });
+    return { ok: true as const };
   });
+  if ("error" in result) return result;
   revalidateGame(gameId);
   return { ok: true };
 }
 
-/** Load a match (with the bits we need) and authorize the caller. */
+/**
+ * Load a match (with the bits we need) and authorize the caller. Match state is
+ * only editable while the game is BOOKED (in play) — once it's COMPLETED the
+ * results are frozen history, so every match mutation is refused. Server
+ * Functions are public POST endpoints, so this gate (not the hidden UI) is what
+ * actually stops a player editing or deleting a finished game's matches.
+ */
 async function loadEditableMatch(matchId: string) {
   const match = await prisma.match.findUnique({
     where: { id: matchId },
-    include: { goals: { select: { teamId: true, phase: true } } },
+    include: {
+      goals: { select: { teamId: true, phase: true } },
+      game: { select: { status: true } },
+    },
   });
   if (!match) return { ok: false as const, error: "Match not found" };
   const auth = await authorizeRecorder(match.gameId);
   if ("error" in auth) return { ok: false as const, error: auth.error };
+  if (match.game.status !== GameStatus.BOOKED) {
+    return {
+      ok: false as const,
+      error: "Match recording is closed — the game isn't in play.",
+    };
+  }
   return { ok: true as const, match };
 }
 
@@ -149,49 +189,71 @@ export async function logGoalAction(
   if (scorerId) {
     const signup = await prisma.signup.findUnique({
       where: { gameId_userId: { gameId: match.gameId, userId: scorerId } },
-      select: { userId: true },
+      select: { status: true },
     });
-    if (!signup) return { error: "Scorer isn't in this game" };
+    if (signup?.status !== SignupStatus.CONFIRMED) {
+      return { error: "Scorer isn't in this game" };
+    }
   }
 
-  const clockMs = elapsedMs(match);
-  const nextGoals = [...match.goals, { teamId, phase: match.phase }];
-  const score = deriveScore(nextGoals, match.homeTeamId, match.awayTeamId);
+  // Insert the goal AND decide whether it ends the match atomically, computing
+  // the score from a fresh read inside the transaction. Two goals logged at the
+  // same moment (multiple phones recording is the normal case) must not each
+  // decide the winner from a stale 2–2 and store an inconsistent final score.
+  // Serializable makes concurrent inserts to the same match's goal set conflict;
+  // the loser retries and recomputes against the winner's goal.
+  const result = await serializableTx(async (tx) => {
+    const current = await tx.match.findUnique({
+      where: { id: matchId },
+      include: { goals: { select: { teamId: true, phase: true } } },
+    });
+    if (!current) return { error: "Match not found" };
+    if (current.status === MatchStatus.COMPLETED) {
+      return { error: "This match is already finished" };
+    }
+    if (current.phase === MatchPhase.PENALTIES) {
+      return { error: "Enter the penalty result instead" };
+    }
 
-  // Does this goal end the match?
-  let finish: { winnerTeamId: string } | null = null;
-  if (match.phase === MatchPhase.GOLDEN_GOAL) {
-    finish = { winnerTeamId: teamId }; // first golden goal wins
-  } else if (reachedGoalTarget(score.home, score.away)) {
-    finish = {
-      winnerTeamId: score.home > score.away ? match.homeTeamId : match.awayTeamId,
-    };
-  }
-
-  await prisma.$transaction(async (tx) => {
     await tx.goal.create({
       data: {
         matchId,
         teamId,
         scorerId: scorerId ?? null,
-        phase: match.phase,
+        phase: current.phase,
         isOwnGoal: isOwnGoal ?? false,
-        clockMs: Math.round(clockMs),
+        clockMs: Math.round(elapsedMs(current)),
       },
     });
-    if (finish) {
+
+    const nextGoals = [...current.goals, { teamId, phase: current.phase }];
+    const score = deriveScore(
+      nextGoals,
+      current.homeTeamId,
+      current.awayTeamId,
+    );
+    let winnerTeamId: string | null = null;
+    if (current.phase === MatchPhase.GOLDEN_GOAL) {
+      winnerTeamId = teamId; // first golden goal wins
+    } else if (reachedGoalTarget(score.home, score.away)) {
+      winnerTeamId =
+        score.home > score.away ? current.homeTeamId : current.awayTeamId;
+    }
+    if (winnerTeamId) {
       await tx.match.update({
         where: { id: matchId },
         data: {
           status: MatchStatus.COMPLETED,
           completedAt: new Date(),
-          winnerTeamId: finish.winnerTeamId,
-          accumulatedMs: Math.round(elapsedMs(match)),
+          winnerTeamId,
+          accumulatedMs: Math.round(elapsedMs(current)),
           periodStartedAt: null,
         },
       });
     }
+    return { ok: true as const };
   });
+  if ("error" in result) return result;
   revalidateGame(match.gameId);
   return { ok: true };
 }

@@ -385,29 +385,14 @@ describe("monzoDescription", () => {
 });
 
 describe("isSignupOpen", () => {
-  const kickoff = new Date("2026-06-07T11:00:00.000Z");
-
-  // 42h before the Sunday-noon kickoff is the default lock deadline (≈Fri 18:00).
-  const LOCK = 42;
-
-  it("is open while OPEN and before the Friday deadline", () => {
-    const now = new Date("2026-06-04T12:00:00.000Z");
-    expect(
-      isSignupOpen({ status: GameStatus.OPEN, kickoffAt: kickoff }, LOCK, now),
-    ).toBe(true);
+  it("is open whenever the game is OPEN — no clock-based cutoff", () => {
+    // Previously a 42h deadline would close signups before kickoff; now only an
+    // admin lock (status leaving OPEN) closes them.
+    expect(isSignupOpen({ status: GameStatus.OPEN })).toBe(true);
   });
 
-  it("is closed after the deadline", () => {
-    const now = new Date("2026-06-05T17:30:00.000Z"); // past 18:00 BST deadline
-    expect(
-      isSignupOpen({ status: GameStatus.OPEN, kickoffAt: kickoff }, LOCK, now),
-    ).toBe(false);
-  });
-
-  it("is closed once the game is no longer OPEN", () => {
-    const now = new Date("2026-06-04T12:00:00.000Z");
-    expect(
-      isSignupOpen({ status: GameStatus.LOCKED, kickoffAt: kickoff }, LOCK, now),
-    ).toBe(false);
+  it("is closed once the game is no longer OPEN (admin locked it)", () => {
+    expect(isSignupOpen({ status: GameStatus.LOCKED })).toBe(false);
+    expect(isSignupOpen({ status: GameStatus.BOOKED })).toBe(false);
   });
 });

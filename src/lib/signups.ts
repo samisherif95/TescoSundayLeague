@@ -11,7 +11,6 @@ import {
   MIN_PLAYERS,
   generateTeams,
   pickBooker,
-  signupDeadline,
   type BookerCandidate,
 } from "@/lib/game";
 import { pickExtra } from "@/lib/duties";
@@ -140,37 +139,26 @@ export type SignupResult =
 /**
  * Add a user to a game's signup list. Returns where they landed.
  *
- * `bypassDeadline` lets an admin add a player even after the soft signup
- * deadline has passed (see {@link addPlayerAction}).
- *
- * Late joins: a LOCKED game still takes new signups. People drop out after the
- * lineup's locked, so we let others step in — a joiner fills any spot a drop-out
- * freed (slotted straight into the rebuilt teams) or lands on the waitlist if
- * the squad's already full. Only LOCKED reopens this way: a BOOKED game has its
- * money split and teams frozen, and a COMPLETED/CANCELLED game is done.
+ * Signups are open the whole time a game is OPEN — there's no clock-based
+ * cutoff. The admin locks the lineup manually, so a player can add themselves
+ * (into a vacancy or the waitlist) any time before the lock. A LOCKED game also
+ * still takes late joins to back-fill drop-outs: the joiner fills a freed spot
+ * (slotted straight into the rebuilt teams) or lands on the waitlist. Only
+ * LOCKED reopens this way — a BOOKED game has its money split and teams frozen,
+ * and a COMPLETED/CANCELLED game is done.
  */
 export async function joinGame(
   gameId: string,
   userId: string,
   position: Position,
-  { bypassDeadline = false }: { bypassDeadline?: boolean } = {},
 ): Promise<SignupResult> {
   return serializableTx(async (tx) => {
-    const game = await tx.game.findUnique({
-      where: { id: gameId },
-      include: { group: { select: { lockOffsetHours: true } } },
-    });
+    const game = await tx.game.findUnique({ where: { id: gameId } });
     if (!game) throw new Error("Game not found");
-    // A LOCKED game stays open to late joins (back-filling drop-outs); every
-    // other non-OPEN status is closed for good.
+    // Open while OPEN (no deadline), or LOCKED to back-fill a drop-out. Every
+    // other status is closed for good.
     const lateJoin = game.status === GameStatus.LOCKED;
-    // The soft signup deadline only gates an OPEN game — a LOCKED late-join is by
-    // definition already past it. An admin add (bypassDeadline) skips it too.
-    const deadlinePassed =
-      !bypassDeadline &&
-      game.status === GameStatus.OPEN &&
-      new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours);
-    if ((game.status !== GameStatus.OPEN && !lateJoin) || deadlinePassed) {
+    if (game.status !== GameStatus.OPEN && !lateJoin) {
       return { kind: "GAME_LOCKED" as const };
     }
 
@@ -266,30 +254,23 @@ export type AddGuestResult =
   | { kind: "FULL" };
 
 /**
- * Add a +1 guest hosted by `hostUserId`. Mirrors {@link joinGame}: allowed while
- * the game is OPEN (before the deadline) *and* on a LOCKED game — where the new
- * +1 fills a spot freed by a drop-out and is slotted straight into the rebuilt
- * teams. The host must be a confirmed player, guests must be enabled for the
- * game, and the squad mustn't already be full. Atomic (serializable) so the cap
- * holds under concurrent fills.
+ * Add a +1 guest hosted by `hostUserId`. Mirrors {@link joinGame}: allowed the
+ * whole time the game is OPEN (no deadline) *and* on a LOCKED game — where the
+ * new +1 fills a spot freed by a drop-out and is slotted straight into the
+ * rebuilt teams. The host must be a confirmed player, guests must be enabled for
+ * the game, and the squad mustn't already be full. Atomic (serializable) so the
+ * cap holds under concurrent fills.
  */
 export async function addGuest(
   gameId: string,
   hostUserId: string,
 ): Promise<AddGuestResult> {
   return serializableTx(async (tx) => {
-    const game = await tx.game.findUnique({
-      where: { id: gameId },
-      include: { group: { select: { lockOffsetHours: true } } },
-    });
+    const game = await tx.game.findUnique({ where: { id: gameId } });
     if (!game) throw new Error("Game not found");
-    // A LOCKED game still takes +1s (back-filling drop-outs); the soft deadline
-    // only gates an OPEN game.
+    // Open while OPEN (no deadline), or LOCKED to back-fill a drop-out.
     const lateJoin = game.status === GameStatus.LOCKED;
-    const deadlinePassed =
-      game.status === GameStatus.OPEN &&
-      new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours);
-    if ((game.status !== GameStatus.OPEN && !lateJoin) || deadlinePassed) {
+    if (game.status !== GameStatus.OPEN && !lateJoin) {
       return { kind: "GAME_LOCKED" as const };
     }
     if (!game.allowGuests) return { kind: "GUESTS_DISABLED" as const };
@@ -392,9 +373,10 @@ export async function leaveGame(
       where: { id: signup.id },
       data: { status: SignupStatus.DROPPED_OUT, waitlistPosition: null },
     });
-    // A dropping member takes their +1s with them — a guest with no host present
-    // makes no sense, and they shouldn't keep propping up the head count.
-    await tx.guest.deleteMany({ where: { gameId, hostUserId: userId } });
+    // Keep their +1s: a guest the member brought is still expected to play, so
+    // they stay on the roster (and their team slot) and the now-dropped host is
+    // still billed for them at settlement — just for the +1, not for themselves.
+    // Remove them with the +1 controls if the guest isn't coming either.
 
     // Only fill the freed spot from the waitlist while the game is still live —
     // never promote someone into a finished (COMPLETED/CANCELLED) game.

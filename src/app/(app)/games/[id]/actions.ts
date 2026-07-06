@@ -15,7 +15,7 @@ import {
 } from "@/lib/session";
 import { joinGame, leaveGame, type SignupResult } from "@/lib/signups";
 import { notifyLeaveOutcome } from "@/lib/leave-notify";
-import { sendEmail } from "@/lib/email";
+import { sendEmail, escapeHtml } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
 
 const joinSchema = z.object({
@@ -67,10 +67,9 @@ const addPlayerSchema = z.object({
  * Admin: add any group member to a game on their behalf — someone who asked to
  * be put down in person, or to make up the numbers. Runs the exact same signup
  * engine as a self sign-up ({@link joinGame}), so the cap, the waitlist and the
- * concurrency handling all behave identically. The one admin privilege is that
- * the soft signup deadline is bypassed: a player can be added any time the game
- * is still OPEN (but never once it's locked). The added player is emailed +
- * pushed so they know they're down.
+ * concurrency handling all behave identically (signups are open the whole time
+ * the game is OPEN, and a LOCKED game still takes back-fills). The added player
+ * is emailed + pushed so they know they're down.
  */
 export async function addPlayerAction(
   gameId: string,
@@ -102,9 +101,7 @@ export async function addPlayerAction(
     return { error: "That player is already in this game." };
   }
 
-  const result = await joinGame(gameId, userId, position, {
-    bypassDeadline: true,
-  });
+  const result = await joinGame(gameId, userId, position);
   if (result.kind === "GAME_LOCKED") {
     return { error: "This game is no longer open for signups." };
   }
@@ -129,7 +126,7 @@ export async function addPlayerAction(
       subject: confirmed
         ? "You're in for Sunday's game"
         : "You've been added to Sunday's waitlist",
-      html: `<p>Hi ${member.user.name ?? "there"},</p>
+      html: `<p>Hi ${escapeHtml(member.user.name) || "there"},</p>
         <p>An admin has added you to the ${when} game${
           confirmed ? "" : " — you're on the waitlist for now"
         }. See you on the pitch!</p>`,
@@ -192,7 +189,7 @@ export async function removePlayerAction(
     await sendEmail({
       to: target.user.email,
       subject: "You've been removed from Sunday's game",
-      html: `<p>Hi ${target.user.name ?? "there"},</p>
+      html: `<p>Hi ${escapeHtml(target.user.name) || "there"},</p>
         <p>An admin has removed you from the ${when} game. If you think this was a mistake, have a word with your group admin.</p>`,
     }).catch(() => undefined);
   }

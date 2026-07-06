@@ -3,7 +3,11 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
-import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
+import {
+  GameStatus,
+  PaymentStatus,
+  SignupStatus,
+} from "@/generated/prisma/enums";
 import { requireGroupAdmin, requireGameAdmin } from "@/lib/session";
 import { nextKickoff } from "@/lib/game";
 import { openWeeklyGame } from "@/lib/weekly-game";
@@ -12,18 +16,6 @@ import { completeGame } from "@/lib/complete";
 import { cancelGame } from "@/lib/cancel";
 import { setBilledMembers, generatePaymentRequests } from "@/lib/payments";
 import { sendPushToUsers } from "@/lib/push";
-
-const editSchema = z.object({
-  gameId: z.string().min(1),
-  kickoffAt: z.string().min(1),
-  pitchName: z.string().min(1).max(80),
-  // Constrain to http(s) so a stored `javascript:`/`data:` URL can't be
-  // rendered as a booking link href.
-  pitchBookingUrl: z
-    .string()
-    .url()
-    .refine((u) => /^https?:\/\//i.test(u), "Must be an http(s) URL"),
-});
 
 /**
  * Open the next game for the admin's active group. Uses the group's own
@@ -40,28 +32,6 @@ export async function createWeeklyGame() {
   revalidatePath("/admin");
   revalidatePath("/home");
   return { ok: true as const, gameId };
-}
-
-export async function editGame(formData: FormData) {
-  const parsed = editSchema.safeParse({
-    gameId: formData.get("gameId"),
-    kickoffAt: formData.get("kickoffAt"),
-    pitchName: formData.get("pitchName"),
-    pitchBookingUrl: formData.get("pitchBookingUrl"),
-  });
-  if (!parsed.success) return { error: parsed.error.issues[0]?.message };
-  await requireGameAdmin(parsed.data.gameId);
-  await prisma.game.update({
-    where: { id: parsed.data.gameId },
-    data: {
-      kickoffAt: new Date(parsed.data.kickoffAt),
-      pitchName: parsed.data.pitchName,
-      pitchBookingUrl: parsed.data.pitchBookingUrl,
-    },
-  });
-  revalidatePath("/admin");
-  revalidatePath(`/games/${parsed.data.gameId}`);
-  return { ok: true as const };
 }
 
 const scheduleSchema = z.object({
@@ -121,7 +91,7 @@ export async function lockGameAction(
   if (!result.ok) return { error: result.error };
   revalidatePath(`/games/${gameId}`);
   revalidatePath("/admin");
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -139,7 +109,7 @@ export async function endGameAction(
   if (!result.ok) return { error: result.error };
   revalidatePath(`/games/${gameId}`);
   revalidatePath("/admin");
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -157,7 +127,7 @@ export async function cancelGameAction(
   if (!result.ok) return { error: result.error };
   revalidatePath(`/games/${gameId}`);
   revalidatePath("/admin");
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -177,12 +147,20 @@ export async function removeDebtorAction(
     where: { id: gameId },
     select: {
       bookerId: true,
-      paymentRequests: { select: { debtorId: true } },
+      paymentRequests: { select: { debtorId: true, paidStatus: true } },
     },
   });
   if (!game) return { error: "Game not found" };
   if (debtorId === game.bookerId) {
     return { error: "The booker isn't billed — there's nothing to remove." };
+  }
+  // Can't drop someone who's already paid — deleting the row would erase the
+  // record of their payment and over-credit the booker.
+  const target = game.paymentRequests.find((p) => p.debtorId === debtorId);
+  if (target?.paidStatus === PaymentStatus.MARKED_PAID) {
+    return {
+      error: "They've already paid — un-mark their payment before removing them.",
+    };
   }
 
   // Rebill everyone who still has a request, minus the removed player. The
@@ -194,7 +172,7 @@ export async function removeDebtorAction(
   if (!result.ok) return { error: result.error };
 
   revalidatePath(`/games/${gameId}`);
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -210,7 +188,7 @@ export async function regenerateSplitAction(
   const result = await generatePaymentRequests(gameId);
   if (!result.ok) return { error: result.error };
   revalidatePath(`/games/${gameId}`);
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true };
 }
 
@@ -281,6 +259,7 @@ export async function reassignDutyAction(
       bookerId: true,
       bibsUserId: true,
       footballUserId: true,
+      totalCostPence: true,
       signups: {
         where: { status: SignupStatus.CONFIRMED },
         select: { userId: true },
@@ -291,6 +270,19 @@ export async function reassignDutyAction(
   // Duties only exist once a game is locked; don't touch a finished one.
   if (game.status !== GameStatus.LOCKED && game.status !== GameStatus.BOOKED) {
     return { error: "Duties can only be changed once the game is locked." };
+  }
+  // Once the cost is recorded, the current booker has paid the pitch on their
+  // own card — reassigning the booker would redirect everyone's reimbursement
+  // to someone who never spent anything. Bibs/football stay freely swappable.
+  if (
+    parsed.data.duty === "booker" &&
+    game.bookerId !== userId &&
+    game.totalCostPence != null
+  ) {
+    return {
+      error:
+        "The booker's already paid for the pitch — you can't hand booking to someone else now.",
+    };
   }
   if (!game.signups.some((s) => s.userId === userId)) {
     return { error: "That player isn't a confirmed member this week." };
@@ -323,6 +315,6 @@ export async function reassignDutyAction(
   }).catch(() => undefined);
 
   revalidatePath(`/games/${gameId}`);
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true };
 }

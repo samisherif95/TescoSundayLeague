@@ -55,12 +55,22 @@ export async function rateLimit(
   }
 }
 
-/** Best-effort client IP from proxy headers (Vercel sets x-forwarded-for). */
+/**
+ * Best-effort client IP from proxy headers. Prefers the platform-set headers
+ * (`x-real-ip` / `x-vercel-forwarded-for`) over the left-most `x-forwarded-for`
+ * entry: on Vercel that left-most value is CLIENT-supplied, so keying a rate
+ * limit off it lets an attacker rotate the header for a fresh window every
+ * request. The trusted headers are set by the platform and can't be spoofed.
+ */
 export async function clientIp(): Promise<string> {
   const h = await headers();
+  const real = h.get("x-real-ip");
+  if (real) return real.trim() || "unknown";
+  const vercel = h.get("x-vercel-forwarded-for");
+  if (vercel) return vercel.split(",")[0]?.trim() || "unknown";
   const fwd = h.get("x-forwarded-for");
   if (fwd) return fwd.split(",")[0]?.trim() || "unknown";
-  return h.get("x-real-ip") ?? "unknown";
+  return "unknown";
 }
 
 /** Human "X minutes"/"X seconds" for a retry-after value, for error copy. */

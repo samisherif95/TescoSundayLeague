@@ -5,23 +5,49 @@ import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
 
 /**
  * Returns the most relevant game for the home page, scoped to one group:
- *  - The nearest upcoming OPEN/LOCKED/BOOKED game, or
- *  - The most recent COMPLETED game if no upcoming.
+ *  1. The nearest active (OPEN/LOCKED/BOOKED) game whose kickoff hasn't long
+ *     passed — this week's signup sheet, or the game happening today.
+ *  2. Else the most recent active game (a game whose kickoff is in the past but
+ *     an admin hasn't ended yet — still shown, but never in front of a newer
+ *     game from step 1).
+ *  3. Else the most recent COMPLETED game.
+ *
+ * The time filter is what stops a forgotten (never-ended) game from pinning the
+ * home page: once a newer game exists it wins step 1, because the stale one has
+ * dropped out of the "kickoff hasn't long passed" window. Since the lifecycle is
+ * admin-driven (no auto-complete cron), that forgotten-game case is the norm.
  *
  * Wrapped in React.cache for per-request dedup (Prisma is not auto-memoized).
  */
+const ACTIVE_STATUSES = [
+  GameStatus.OPEN,
+  GameStatus.LOCKED,
+  GameStatus.BOOKED,
+] as const;
+// A game still counts as "current" until ~12h after kickoff, so a game played
+// earlier today keeps showing while nothing newer exists.
+const STALE_AFTER_MS = 12 * 60 * 60 * 1000;
+
 export const getCurrentGame = cache(async (groupId: string) => {
+  const cutoff = new Date(Date.now() - STALE_AFTER_MS);
   const upcoming = await prisma.game.findFirst({
     where: {
       groupId,
-      status: {
-        in: [GameStatus.OPEN, GameStatus.LOCKED, GameStatus.BOOKED],
-      },
+      status: { in: [...ACTIVE_STATUSES] },
+      kickoffAt: { gte: cutoff },
     },
     orderBy: { kickoffAt: "asc" },
     include: gameInclude,
   });
   if (upcoming) return upcoming;
+  // No current game — fall back to the most recent active game (a past game an
+  // admin hasn't ended), then to the most recent completed game.
+  const staleActive = await prisma.game.findFirst({
+    where: { groupId, status: { in: [...ACTIVE_STATUSES] } },
+    orderBy: { kickoffAt: "desc" },
+    include: gameInclude,
+  });
+  if (staleActive) return staleActive;
   return prisma.game.findFirst({
     where: { groupId, status: GameStatus.COMPLETED },
     orderBy: { kickoffAt: "desc" },
@@ -31,7 +57,7 @@ export const getCurrentGame = cache(async (groupId: string) => {
 
 const gameInclude = {
   group: {
-    select: { id: true, name: true, lockOffsetHours: true },
+    select: { id: true, name: true, lockOffsetHours: true, timezone: true },
   },
   signups: {
     where: { status: { not: SignupStatus.DROPPED_OUT } },

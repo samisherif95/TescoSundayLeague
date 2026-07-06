@@ -28,7 +28,10 @@ vi.mock("@/lib/session", () => ({
 }));
 vi.mock("@/lib/signups", () => ({ leaveGame, joinGame: vi.fn() }));
 vi.mock("@/lib/leave-notify", () => ({ notifyLeaveOutcome }));
-vi.mock("@/lib/email", () => ({ sendEmail }));
+vi.mock("@/lib/email", () => ({
+  sendEmail,
+  escapeHtml: (s: string | null | undefined) => String(s ?? ""),
+}));
 vi.mock("@/lib/push", () => ({ sendPushToUsers }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 

@@ -1,68 +1,84 @@
 # Sunday League
 
-End-to-end weekly automation for a 5-a-side football group: signups, randomised booker selection, monzo.me payment requests, anonymous teammate ratings, and a balanced team generator.
-
-See `/Users/eyakristou/.claude/plans/let-me-explain-the-cuddly-haven.md` for the full design rationale.
+Weekly organiser for a 5-a-side football group: signups + waitlist, admin-driven
+game lifecycle, randomised booker selection, Monzo/Revolut payment requests,
+live match-day scoring, anonymous teammate ratings, and a balanced team generator.
+Supports multiple independent groups, each with its own schedule and join key.
 
 ## Stack
 
 - **Next.js 16** (App Router) + TypeScript + Tailwind v4 + shadcn/ui
-- **Postgres** via **Prisma 7**
-- **Auth.js v5** with Google + Email/Password + Phone SMS (Twilio Verify)
-- **Resend** (email) + **Twilio** (SMS)
-- **Vercel Cron** for weekly scheduling
+- **Postgres** via **Prisma 7** (schema pushed with `prisma db push` — there is no
+  migration history)
+- **Auth.js v5** with Google + Email/Password (email-verified, bcrypt)
+- **Email** via SMTP (nodemailer) + **Web Push** (VAPID)
 
 ## Setup
 
 ```bash
 cp .env.example .env
-# Fill in DATABASE_URL, AUTH_SECRET, CRON_SECRET (required to start)
-# Add provider creds as you wire them up (Google/Twilio/Resend)
+# Fill in DATABASE_URL and AUTH_SECRET (required to start).
+# Add provider creds as you wire them up (Google OAuth, SMTP, VAPID push).
 ```
 
-Generate Auth.js + cron secrets:
+Generate the Auth.js secret:
 
 ```bash
 openssl rand -base64 32   # paste as AUTH_SECRET
-openssl rand -base64 32   # paste as CRON_SECRET
 ```
 
 Database setup options:
 
-- **Easiest** — sign up for a free Neon Postgres at https://neon.tech, copy the connection string into `DATABASE_URL`.
-- **Local Postgres** — use any local Postgres, set the URL accordingly.
+- **Easiest** — sign up for a free Neon Postgres at https://neon.tech, copy the
+  connection string into `DATABASE_URL`. Neon serves DDL over an unpooled URL, so
+  also set `DATABASE_URL_UNPOOLED` (see `prisma.config.ts`).
+- **Local Postgres** — use any local Postgres and set the URL accordingly.
 
 Then:
 
 ```bash
 npm install
-npx prisma migrate dev --name init    # creates tables
+npm run db:push    # creates/updates tables from prisma/schema.prisma
+npm run db:seed    # optional: demo data
 npm run dev
 ```
 
 Open http://localhost:3000.
 
+> **Deploying a schema change:** because this project uses `db push` (no
+> migrations), run `npm run db:push` against production **before** deploying code
+> that depends on the change.
+
 ## How it works
 
-| When | What |
+The lifecycle is **admin-driven** — there are no cron jobs. A group admin runs
+each transition from the admin page / game page.
+
+| Step | What |
 |------|------|
-| Mon 09:00 UK | Cron creates a new game for the upcoming Sunday in `OPEN` status, emails everyone. |
-| Anytime in the week | Players sign up via `/games/[id]` and pick a position. First 15 confirmed, 16th+ on the waitlist. Drops auto-promote. |
-| Fri 18:00 UK | If ≥10 confirmed, cron LOCKs the game, randomly picks a booker, generates balanced teams, emails everyone and SMSes the booker. |
-| Booker books | Booker goes to `/games/[id]/book`, opens hireapitch.com via the deep link, books with their own card, enters total cost. App generates monzo.me payment links for the others. |
-| Sun 23:00 UK | Cron flips `BOOKED` games to `COMPLETED` and emails everyone with a link to rate teammates. |
-| Within 48hr | Players rate (1–5, anonymous, optional). Skill scores update and feed next week's team generator. |
+| Create game | Admin opens the next game (using the group's configured kickoff day/time) in `OPEN` status; the group's members are emailed + pushed. |
+| Signups | Players sign up via `/games/[id]` and pick a position. First 15 (members + guests) are confirmed, the rest waitlisted. Freed slots auto-promote the waitlist. |
+| Lock | Admin locks the game: it randomly picks a booker, assigns bibs/football duties, and generates balanced teams. Needs ≥10. |
+| Book | The booker opens `/games/[id]/book`, books the pitch on their own card, and enters the total cost. |
+| Match day | Anyone playing can run the live match clock and log goals/results while the game is `BOOKED`. |
+| End game | Admin ends the game (`COMPLETED`). This settles any in-flight match, generates the payment split (Monzo/Revolut links), and emails everyone the rating link. |
+| Rate | Within 48h **of the game ending**, players rate teammates (1–5, anonymous, optional). Scores feed next week's team balancing. |
 
-## Manual testing
+## Admin
 
-In dev, append `?dev=1` to bypass cron auth:
+The first user whose email is in `ADMIN_EMAILS` is flagged at the platform level,
+but product permissions are **per-group**: whoever creates a group is its `ADMIN`
+(`GroupMember.role`). Admins create/lock/end/cancel games, edit kickoff/pitch,
+manage the payment split, and share the group's join key.
 
-- `curl http://localhost:3000/api/cron/create-weekly-game?dev=1`
-- `curl http://localhost:3000/api/cron/friday-lock?dev=1`
-- `curl http://localhost:3000/api/cron/sunday-complete?dev=1`
+## Demo mode
 
-The first user whose email is in `ADMIN_EMAILS` gets `isAdmin = true` on sign-in; `/admin` lets them create games manually and edit kickoff/pitch.
+Set `DEMO_MODE=1` (plus seeded `@demo.sundayleague.app` users) to enable the
+`/demo` impersonation switcher. It is inert unless that env var is set, so it can
+never be reached in production without opting in.
 
 ## Deploy
 
-Push to GitHub, import into Vercel, set env vars from `.env.example`, and Vercel will automatically wire up the cron jobs from `vercel.json`.
+Push to GitHub and import into Vercel. Set the env vars from `.env.example`. Push
+the schema to your production database with `npm run db:push` before the first
+deploy (and before any later deploy that changes the schema).

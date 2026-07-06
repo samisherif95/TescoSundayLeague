@@ -56,10 +56,12 @@ export async function confirmBooking(formData: FormData) {
     // keeping it COMPLETED. Rebill whoever's currently billed so this doesn't
     // resurrect no-shows an admin already removed; if nothing's billed yet
     // (cost entered after an early end), fall back to the full confirmed squad.
-    await prisma.game.update({
-      where: { id: game.id },
+    // Conditional on status so a concurrent cancel can't be clobbered back.
+    const updated = await prisma.game.updateMany({
+      where: { id: game.id, status: GameStatus.COMPLETED },
       data: { totalCostPence: totalPence },
     });
+    if (updated.count === 0) return { error: "Game is not ready to be booked" };
     const existing = game.paymentRequests.map((p) => p.debtorId);
     const result =
       existing.length > 0
@@ -70,10 +72,15 @@ export async function confirmBooking(formData: FormData) {
     // Record the cost only. Payment links aren't generated or shown to the
     // squad until an admin ends the game — that's when the attendee list is
     // final and any no-shows have been removed, so the split is correct.
-    await prisma.game.update({
-      where: { id: game.id },
+    // Conditional on status so a concurrent cancel/complete isn't overwritten.
+    const updated = await prisma.game.updateMany({
+      where: {
+        id: game.id,
+        status: { in: [GameStatus.LOCKED, GameStatus.BOOKED] },
+      },
       data: { status: GameStatus.BOOKED, totalCostPence: totalPence },
     });
+    if (updated.count === 0) return { error: "Game is not ready to be booked" };
   }
 
   revalidatePath(`/games/${game.id}`);
@@ -102,6 +109,28 @@ export async function markPaymentPaid(formData: FormData) {
       url: `/games/${payment.gameId}`,
     });
   }
+  revalidatePath(`/games/${payment.gameId}/book`);
+  revalidatePath(`/games/${payment.gameId}`);
+  return { ok: true as const };
+}
+
+/**
+ * Undo a "marked paid" — for a mis-tap by either side. Same authorization as
+ * marking paid (booker or the debtor). Once unpaid again, the row is no longer
+ * frozen, so an admin can correct the split or remove the player.
+ */
+export async function unmarkPaymentPaid(formData: FormData) {
+  const user = await requireOnboardedUser();
+  const id = String(formData.get("paymentRequestId") ?? "");
+  const payment = await prisma.paymentRequest.findUnique({ where: { id } });
+  if (!payment) return { error: "Payment not found" };
+  if (payment.bookerId !== user.id && payment.debtorId !== user.id) {
+    return { error: "Not allowed" };
+  }
+  await prisma.paymentRequest.update({
+    where: { id },
+    data: { paidStatus: "UNPAID" },
+  });
   revalidatePath(`/games/${payment.gameId}/book`);
   revalidatePath(`/games/${payment.gameId}`);
   return { ok: true as const };

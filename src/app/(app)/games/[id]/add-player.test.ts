@@ -27,7 +27,10 @@ vi.mock("@/lib/session", () => ({
 }));
 vi.mock("@/lib/signups", () => ({ joinGame, leaveGame: vi.fn() }));
 vi.mock("@/lib/leave-notify", () => ({ notifyLeaveOutcome: vi.fn() }));
-vi.mock("@/lib/email", () => ({ sendEmail }));
+vi.mock("@/lib/email", () => ({
+  sendEmail,
+  escapeHtml: (s: string | null | undefined) => String(s ?? ""),
+}));
 vi.mock("@/lib/push", () => ({ sendPushToUsers }));
 vi.mock("next/cache", () => ({ revalidatePath: vi.fn() }));
 
@@ -71,18 +74,14 @@ describe("addPlayerAction", () => {
     db.signup.findUnique.mockResolvedValue({ status: "DROPPED_OUT" });
     const r = await addPlayerAction("g1", "u1", "FWD");
     expect(r).toMatchObject({ ok: true });
-    expect(joinGame).toHaveBeenCalledWith("g1", "u1", "FWD", {
-      bypassDeadline: true,
-    });
+    expect(joinGame).toHaveBeenCalledWith("g1", "u1", "FWD");
   });
 
-  it("adds the player past the deadline and notifies them", async () => {
+  it("adds the player and notifies them", async () => {
     const r = await addPlayerAction("g1", "u1", "DEF");
     expect(r).toMatchObject({ ok: true, result: { kind: "CONFIRMED" } });
-    // Always bypasses the soft signup deadline (admin privilege).
-    expect(joinGame).toHaveBeenCalledWith("g1", "u1", "DEF", {
-      bypassDeadline: true,
-    });
+    // Signups are open the whole time the game is OPEN — no deadline to bypass.
+    expect(joinGame).toHaveBeenCalledWith("g1", "u1", "DEF");
     expect(sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({ to: "sam@example.com" }),
     );

@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { CheckCircle2, Loader2, X } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { markPaymentPaid } from "./book/actions";
+import { markPaymentPaid, unmarkPaymentPaid } from "./book/actions";
 import { nudgeUnpaidAction } from "./actions";
 import { removeDebtorAction, regenerateSplitAction } from "@/app/(app)/admin/actions";
 
@@ -46,6 +46,16 @@ export function PaymentsPanel({
       const res = await markPaymentPaid(fd);
       if (res?.error) toast.error(res.error);
       else toast.success("Marked as paid");
+    });
+  }
+
+  function unmark(paymentRequestId: string) {
+    startTransition(async () => {
+      const fd = new FormData();
+      fd.set("paymentRequestId", paymentRequestId);
+      const res = await unmarkPaymentPaid(fd);
+      if (res?.error) toast.error(res.error);
+      else toast.success("Payment un-marked");
     });
   }
 
@@ -135,8 +145,21 @@ export function PaymentsPanel({
                   Mark paid
                 </Button>
               )}
-              {/* Admin: drop a no-show from the split */}
-              {isAdmin && (
+              {/* Undo a mis-tap — the payer or the booker can un-mark. */}
+              {(isMine || isBooker) && p.paid && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="text-muted-foreground"
+                  disabled={pending}
+                  onClick={() => unmark(p.id)}
+                >
+                  Un-mark
+                </Button>
+              )}
+              {/* Admin: drop a no-show from the split. Hidden once paid — a
+                  settled row is frozen; un-mark it first to remove them. */}
+              {isAdmin && !p.paid && (
                 <Button
                   size="icon-sm"
                   variant="ghost"

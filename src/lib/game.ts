@@ -56,7 +56,10 @@ function memberRef(p: DraftablePlayer): TeamMemberRef {
  * balance purely on skillScore.
  *
  * Algorithm (two-phase, for predictability):
- *  1. Cap at MAX_PLAYERS (15). Sort by skillScore desc.
+ *  1. Sort by skillScore desc, THEN cap at MAX_PLAYERS (15). Sorting first means
+ *     an over-cap roster (shouldn't happen — capacity is enforced on signup) drops
+ *     the weakest deterministically, never whoever happens to be last in the
+ *     caller's array (which was always the guests).
  *  2. Phase A — snake-draft the strongest 10 into A and B: each pick goes to
  *     whichever of A/B currently has the lower total skill (the proven
  *     two-team balance).
@@ -66,11 +69,11 @@ export function generateTeams(allPlayers: DraftablePlayer[]): DraftedTeam[] {
   if (allPlayers.length < MIN_PLAYERS) {
     throw new Error(`Need at least ${MIN_PLAYERS} players to generate teams`);
   }
-  const players = allPlayers.slice(0, MAX_PLAYERS);
-  const sorted = [...players].sort((a, b) => b.skillScore - a.skillScore);
+  const sorted = [...allPlayers].sort((a, b) => b.skillScore - a.skillScore);
+  const capped = sorted.slice(0, MAX_PLAYERS);
 
-  const main = sorted.slice(0, TEAM_SIZE * 2); // strongest 10 → A + B
-  const overflow = sorted.slice(TEAM_SIZE * 2); // 0–5 → C
+  const main = capped.slice(0, TEAM_SIZE * 2); // strongest 10 → A + B
+  const overflow = capped.slice(TEAM_SIZE * 2); // 0–5 → C
 
   const teamA: DraftablePlayer[] = [];
   const teamB: DraftablePlayer[] = [];
@@ -318,14 +321,20 @@ export function londonWallTimeToUtc(
 }
 
 /**
- * Format a UTC instant as the London wall-clock value an `<input type="datetime-local">`
- * expects: `YYYY-MM-DDTHH:mm`. The inverse of feeding that string back through
- * {@link londonWallTimeToUtc}, so the editor round-trips without timezone drift.
+ * Format a UTC instant as the wall-clock value an `<input type="datetime-local">`
+ * expects in a given timezone: `YYYY-MM-DDTHH:mm`. The inverse of feeding that
+ * string back through {@link zonedWallTimeToUtc}, so the editor round-trips
+ * without timezone drift for ANY group (not just London ones).
  */
-export function londonInputValue(d: Date): string {
-  const p = londonParts(d);
+export function zonedInputValue(d: Date, timeZone: string): string {
+  const p = zonedParts(d, timeZone);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`;
+}
+
+/** London-specific convenience wrapper over {@link zonedInputValue}. */
+export function londonInputValue(d: Date): string {
+  return zonedInputValue(d, LONDON_TZ);
 }
 
 /**
@@ -355,14 +364,12 @@ export function signupDeadline(
   return lockDeadline(kickoffAt, lockOffsetHours);
 }
 
-/** Signups are open only while the game is OPEN *and* we're before the deadline. */
-export function isSignupOpen(
-  game: { status: GameStatus; kickoffAt: Date },
-  lockOffsetHours: number = DEFAULT_LOCK_OFFSET_HOURS,
-  now: Date = new Date(),
-): boolean {
-  return (
-    game.status === GameStatus.OPEN &&
-    now < lockDeadline(game.kickoffAt, lockOffsetHours)
-  );
+/**
+ * Signups are open the whole time a game is OPEN — there's no clock-based
+ * cutoff. The admin locks the lineup manually, so as long as the game hasn't
+ * been locked, players can still add themselves (filling a vacancy or joining
+ * the waitlist).
+ */
+export function isSignupOpen(game: { status: GameStatus }): boolean {
+  return game.status === GameStatus.OPEN;
 }

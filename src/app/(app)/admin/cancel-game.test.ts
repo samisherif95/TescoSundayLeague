@@ -4,7 +4,7 @@ import { GameStatus, SignupStatus } from "@/generated/prisma/enums";
 // Mock the layers the action + shared canceller depend on (auth, DB, email,
 // push, cache revalidation).
 const { db, requireAdmin, sendEmail, sendPushToUsers } = vi.hoisted(() => ({
-  db: { game: { findUnique: vi.fn(), update: vi.fn() } },
+  db: { game: { findUnique: vi.fn(), update: vi.fn(), updateMany: vi.fn() } },
   requireAdmin: vi.fn(),
   sendEmail: vi.fn(),
   sendPushToUsers: vi.fn(),
@@ -44,6 +44,8 @@ beforeEach(() => {
   sendPushToUsers.mockResolvedValue(undefined);
   db.game.findUnique.mockResolvedValue(openGame());
   db.game.update.mockResolvedValue({});
+  // Conditional cancel flip: 1 row = the game was still live when we wrote.
+  db.game.updateMany.mockResolvedValue({ count: 1 });
 });
 
 describe("cancelGameAction — guards", () => {
@@ -78,8 +80,13 @@ describe("cancelGameAction — happy path", () => {
   it("cancels an OPEN game, emails members with an address, pushes everyone", async () => {
     const r = await cancelGameAction("g1");
     expect(r).toEqual({ ok: true });
-    expect(db.game.update).toHaveBeenCalledWith({
-      where: { id: "g1" },
+    expect(db.game.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "g1",
+        status: {
+          in: [GameStatus.OPEN, GameStatus.LOCKED, GameStatus.BOOKED],
+        },
+      },
       data: { status: GameStatus.CANCELLED },
     });
     // Only the member with an email gets the email...
@@ -100,8 +107,13 @@ describe("cancelGameAction — happy path", () => {
     );
     const r = await cancelGameAction("g1");
     expect(r).toEqual({ ok: true });
-    expect(db.game.update).toHaveBeenCalledWith({
-      where: { id: "g1" },
+    expect(db.game.updateMany).toHaveBeenCalledWith({
+      where: {
+        id: "g1",
+        status: {
+          in: [GameStatus.OPEN, GameStatus.LOCKED, GameStatus.BOOKED],
+        },
+      },
       data: { status: GameStatus.CANCELLED },
     });
   });

@@ -5,7 +5,12 @@ import { GameStatus, SignupStatus, Position } from "@/generated/prisma/enums";
 // Defined via vi.hoisted so they exist before the (hoisted) vi.mock factories run.
 const { db, sendEmail, sendPushToUsers } = vi.hoisted(() => {
   const db = {
-    game: { findUnique: vi.fn(), groupBy: vi.fn(), update: vi.fn() },
+    game: {
+      findUnique: vi.fn(),
+      groupBy: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+    },
     team: { deleteMany: vi.fn(), create: vi.fn() },
     // Exempt-from-duties members of the game's group (per GroupMember).
     groupMember: { findMany: vi.fn() },
@@ -19,7 +24,10 @@ const { db, sendEmail, sendPushToUsers } = vi.hoisted(() => {
   };
 });
 vi.mock("@/lib/db", () => ({ prisma: db }));
-vi.mock("@/lib/email", () => ({ sendEmail }));
+vi.mock("@/lib/email", () => ({
+  sendEmail,
+  escapeHtml: (s: string | null | undefined) => String(s ?? ""),
+}));
 vi.mock("@/lib/push", () => ({ sendPushToUsers }));
 
 import { lockGame } from "@/lib/lock";
@@ -62,6 +70,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   db.game.groupBy.mockResolvedValue([]); // no past bookings by default
   db.game.update.mockResolvedValue({});
+  // Conditional lock flip: 1 row means the game was still OPEN when we wrote.
+  db.game.updateMany.mockResolvedValue({ count: 1 });
   db.team.deleteMany.mockResolvedValue({});
   db.team.create.mockResolvedValue({});
   db.groupMember.findMany.mockResolvedValue([]); // nobody exempt by default
@@ -111,10 +121,11 @@ describe("lockGame happy path", () => {
     expect(r.teamCount).toBe(2);
     expect(confirmed(10).map((s) => s.id)).toContain(r.bookerId);
 
-    // Status flipped to LOCKED with the booker recorded.
-    expect(db.game.update).toHaveBeenCalledWith(
+    // Status flipped to LOCKED with the booker recorded — conditional on the
+    // game still being OPEN, so a concurrent lock can't double-shuffle.
+    expect(db.game.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: "game1" },
+        where: { id: "game1", status: GameStatus.OPEN },
         data: expect.objectContaining({
           status: GameStatus.LOCKED,
           bookerId: r.bookerId,
@@ -184,6 +195,7 @@ describe("lockGame happy path", () => {
       vi.clearAllMocks();
       db.game.groupBy.mockResolvedValue([]);
       db.game.update.mockResolvedValue({});
+      db.game.updateMany.mockResolvedValue({ count: 1 });
       db.team.deleteMany.mockResolvedValue({});
       db.team.create.mockResolvedValue({});
       // "exempt" is flagged exempt in this game's group.

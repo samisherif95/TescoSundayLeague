@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db";
+import { Prisma } from "@/generated/prisma/client";
 import { GameStatus } from "@/generated/prisma/enums";
-import { sendEmail } from "@/lib/email";
+import { sendEmail, escapeHtml } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
 import { env } from "@/lib/env";
 
@@ -25,15 +26,33 @@ export async function openWeeklyGame(
   const group = await prisma.group.findUnique({ where: { id: groupId } });
   if (!group) throw new Error("Group not found");
 
-  const game = await prisma.game.create({
-    data: {
-      groupId,
-      kickoffAt: kickoff,
-      status: GameStatus.OPEN,
-      pitchName: group.defaultPitchName,
-      pitchBookingUrl: group.defaultPitchBookingUrl,
-    },
-  });
+  // The find-then-create above is a fast path, not a guard: two concurrent
+  // "Create game" taps can both miss `existing`. The @@unique([groupId,
+  // kickoffAt]) constraint makes the loser's insert throw P2002 — treat that as
+  // "someone else just created it" and return that game without notifying twice.
+  let game;
+  try {
+    game = await prisma.game.create({
+      data: {
+        groupId,
+        kickoffAt: kickoff,
+        status: GameStatus.OPEN,
+        pitchName: group.defaultPitchName,
+        pitchBookingUrl: group.defaultPitchBookingUrl,
+      },
+    });
+  } catch (e) {
+    if (
+      e instanceof Prisma.PrismaClientKnownRequestError &&
+      e.code === "P2002"
+    ) {
+      const winner = await prisma.game.findFirst({
+        where: { groupId, kickoffAt: kickoff },
+      });
+      if (winner) return { gameId: winner.id, created: false };
+    }
+    throw e;
+  }
 
   const when = kickoff.toLocaleDateString("en-GB", {
     day: "numeric",
@@ -57,8 +76,8 @@ export async function openWeeklyGame(
         sendEmail({
           to: u.email,
           subject: `${group.name} — Sunday football ${when}, sign up`,
-          html: `<p>Hey ${u.name ?? "there"},</p>
-            <p>New game is open for ${group.name}. <a href="${env.appUrl}/games/${game.id}">Tap to sign up</a>.</p>
+          html: `<p>Hey ${escapeHtml(u.name) || "there"},</p>
+            <p>New game is open for ${escapeHtml(group.name)}. <a href="${env.appUrl}/games/${game.id}">Tap to sign up</a>.</p>
             <p>Sign up before the deadline — if we hit 10+ we'll lock and pick a booker.</p>`,
         }),
       ),

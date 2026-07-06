@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db";
 import { SignupStatus } from "@/generated/prisma/enums";
-import { sendEmail } from "@/lib/email";
+import { sendEmail, escapeHtml } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
 import { env } from "@/lib/env";
 import type { LeaveOutcome } from "@/lib/signups";
@@ -36,7 +36,7 @@ export async function notifyLeaveOutcome(
       await sendEmail({
         to: promoted.email,
         subject: "You're in! Promoted from the waitlist",
-        html: `<p>Hi ${promoted.name ?? "there"},</p>
+        html: `<p>Hi ${escapeHtml(promoted.name) || "there"},</p>
           <p>A spot opened up for the ${when} game and you're now confirmed.${
             teamLabel
               ? ` You've taken the open spot in <strong>Team ${teamLabel}</strong>.`
@@ -62,7 +62,7 @@ export async function notifyLeaveOutcome(
       await sendEmail({
         to: newBooker.email,
         subject: "You're now booking the pitch this Sunday",
-        html: `<p>Hi ${newBooker.name ?? "there"},</p>
+        html: `<p>Hi ${escapeHtml(newBooker.name) || "there"},</p>
           <p>The original booker dropped out, so you've been picked to book the pitch for ${when}.</p>
           <p><a href="${env.appUrl}${gameUrl}/book">Open the booking page</a>.</p>`,
       }).catch(() => undefined);

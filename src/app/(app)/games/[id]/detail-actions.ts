@@ -5,11 +5,11 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { GameStatus } from "@/generated/prisma/enums";
 import { authorizeBookingMember } from "@/lib/booking-access";
-import { londonWallTimeToUtc } from "@/lib/game";
+import { zonedWallTimeToUtc, LONDON_TZ } from "@/lib/game";
 
 const schema = z.object({
   gameId: z.string().min(1),
-  // London wall-clock, as produced by <input type="datetime-local">.
+  // Group-timezone wall-clock, as produced by <input type="datetime-local">.
   kickoffLocal: z
     .string()
     .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, "Pick a date and time"),
@@ -22,12 +22,12 @@ const schema = z.object({
 
 /**
  * Edit a game's kickoff time and location (pitch). Open to anyone playing that
- * Sunday — same access as shuffling teams — so the squad can move the game if
+ * week — same access as shuffling teams — so the squad can move the game if
  * plans change, without waiting on an admin.
  *
- * The kickoff arrives as a London wall-clock string and is converted to the
- * correct UTC instant (DST-aware), so "12:00" always means noon in London
- * regardless of the server's timezone.
+ * The kickoff arrives as a wall-clock string in the GROUP'S timezone and is
+ * converted to the correct UTC instant (DST-aware), so "12:00" always means noon
+ * where the group actually plays — not London — regardless of the server's zone.
  */
 export async function updateGameDetailsAction(
   input: z.infer<typeof schema>,
@@ -43,7 +43,7 @@ export async function updateGameDetailsAction(
 
   const game = await prisma.game.findUnique({
     where: { id: gameId },
-    select: { status: true },
+    select: { status: true, group: { select: { timezone: true } } },
   });
   if (!game) return { error: "Game not found" };
   if (
@@ -56,7 +56,8 @@ export async function updateGameDetailsAction(
   const [datePart, timePart] = kickoffLocal.split("T");
   const [year, month, day] = datePart.split("-").map(Number);
   const [hour, minute] = timePart.split(":").map(Number);
-  const kickoffAt = londonWallTimeToUtc(year, month, day, hour, minute);
+  const tz = game.group?.timezone ?? LONDON_TZ;
+  const kickoffAt = zonedWallTimeToUtc(year, month, day, hour, minute, tz);
 
   await prisma.game.update({
     where: { id: gameId },
@@ -70,6 +71,6 @@ export async function updateGameDetailsAction(
 
   revalidatePath(`/games/${gameId}`);
   revalidatePath(`/games/${gameId}/book`);
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true };
 }

@@ -39,8 +39,12 @@ export async function submitRatings(payload: unknown) {
   if (game.status !== GameStatus.COMPLETED) {
     return { error: "Ratings only open after the match" };
   }
+  // Window runs from when the game was ended, not kickoff — an admin can end a
+  // game long after kickoff, and rating must still be possible for 48h after.
+  // Fall back to kickoff for any legacy game completed before completedAt existed.
   const windowMs = RATING_WINDOW_HOURS * 60 * 60 * 1000;
-  if (Date.now() - game.kickoffAt.getTime() > windowMs) {
+  const windowStart = game.completedAt ?? game.kickoffAt;
+  if (Date.now() - windowStart.getTime() > windowMs) {
     return { error: "Rating window has closed" };
   }
   // Rater must have played

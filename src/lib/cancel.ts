@@ -36,10 +36,20 @@ export async function cancelGame(gameId: string): Promise<CancelResult> {
     return { ok: false, error: "Game is already finished or cancelled." };
   }
 
-  await prisma.game.update({
-    where: { id: game.id },
+  // Conditional flip: only cancel a game that's still live (OPEN/LOCKED/BOOKED),
+  // so a cancel racing a complete/other-cancel can't overwrite a terminal state.
+  const flipped = await prisma.game.updateMany({
+    where: {
+      id: game.id,
+      status: {
+        in: [GameStatus.OPEN, GameStatus.LOCKED, GameStatus.BOOKED],
+      },
+    },
     data: { status: GameStatus.CANCELLED },
   });
+  if (flipped.count === 0) {
+    return { ok: false, error: "Game is already finished or cancelled." };
+  }
 
   await notifyCancelled(game.signups);
 

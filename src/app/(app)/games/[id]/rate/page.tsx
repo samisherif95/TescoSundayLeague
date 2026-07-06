@@ -40,6 +40,25 @@ export default async function RatePage({
   const playedIds = new Set(game.signups.map((s) => s.userId));
   if (!playedIds.has(user.id)) redirect(`/games/${game.id}`);
 
+  // Same 48h window the submit action enforces (from game end, not kickoff) —
+  // show a closed state rather than a form that rejects every submission.
+  const RATING_WINDOW_MS = 48 * 60 * 60 * 1000;
+  const windowStart = game.completedAt ?? game.kickoffAt;
+  // eslint-disable-next-line react-hooks/purity -- server render; "now" is intended
+  const ratingClosed = Date.now() - windowStart.getTime() > RATING_WINDOW_MS;
+  if (ratingClosed) {
+    return (
+      <main className="mx-auto max-w-2xl space-y-6 px-4 py-6">
+        <header>
+          <h1 className="text-2xl font-semibold">Rating closed</h1>
+          <p className="text-sm text-muted-foreground">
+            The 48-hour window to rate this game&apos;s teammates has passed.
+          </p>
+        </header>
+      </main>
+    );
+  }
+
   // Load only this user's existing ratings (server-side only — never expose
   // anyone else's raterId).
   const existing = await prisma.rating.findMany({

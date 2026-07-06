@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db";
-import { SignupStatus } from "@/generated/prisma/enums";
+import { PaymentStatus, SignupStatus } from "@/generated/prisma/enums";
 import { calcSplit, generatePaymentLink, monzoDescription } from "@/lib/game";
 
 export type PaymentsResult =
@@ -16,8 +16,14 @@ export type PaymentsResult =
  *
  * Removing a no-show is just calling this with a smaller member set: their row
  * (and their +1s) drop out and everyone else's share goes up to cover the same
- * total. Idempotent — re-running with the same set produces the same rows, and
- * upserts preserve each debtor's `paidStatus` (only the amount + link refresh).
+ * total. Idempotent — re-running with the same set produces the same rows.
+ *
+ * A row that's already MARKED_PAID is FROZEN: its amount and link are never
+ * changed, and it's never deleted. Payment links are revealed at game end and
+ * people pay immediately, so re-splitting afterwards (a no-show removed, the
+ * cost corrected) must not retroactively reprice money someone already sent —
+ * the booker absorbs any resulting difference, exactly as they absorb rounding
+ * and guests. Only UNPAID rows are recomputed.
  *
  * Guests are billed to their host, so a guest whose host is no longer billed is
  * dropped from the split too.
@@ -35,6 +41,7 @@ export async function setBilledMembers(
       bookerId: true,
       booker: { select: { paymentMethod: true, paymentHandle: true } },
       guests: { select: { hostUserId: true } },
+      paymentRequests: { select: { debtorId: true, paidStatus: true } },
     },
   });
 
@@ -52,46 +59,69 @@ export async function setBilledMembers(
     };
   }
 
-  // The booker is always a head on the pitch, even though they're never billed.
-  const billed = new Set(billedMemberIds);
-  billed.add(game.bookerId);
+  // "Players" get a head of their own (they were on the pitch). The booker is
+  // always a player, and any already-paid debtor stays a player so their frozen
+  // head keeps counting even if the caller left them out.
+  const paidDebtors = new Set(
+    game.paymentRequests
+      .filter((p) => p.paidStatus === PaymentStatus.MARKED_PAID)
+      .map((p) => p.debtorId),
+  );
+  const players = new Set(billedMemberIds);
+  players.add(game.bookerId);
+  for (const id of paidDebtors) players.add(id);
 
-  // Count +1s per host, but only for hosts still in the billed set — a removed
-  // member's +1s come off the bill with them.
+  // Every +1 is billed to whoever brought them — even if that host has since
+  // dropped out. A host who leaves but whose guest still plays owes for the
+  // guest only (they get no head of their own since they didn't play). So each
+  // guest host is a billed party regardless of whether they're a player.
   const guestCountByHost = new Map<string, number>();
   for (const g of game.guests) {
-    if (!billed.has(g.hostUserId)) continue;
     guestCountByHost.set(
       g.hostUserId,
       (guestCountByHost.get(g.hostUserId) ?? 0) + 1,
     );
   }
 
-  const debtorIds = [...billed].filter((id) => id !== game.bookerId);
+  // Everyone with a bill: players, plus any guest host who isn't already one.
+  const parties = new Set<string>(players);
+  for (const host of guestCountByHost.keys()) parties.add(host);
 
-  // No one left to bill (everyone but the booker removed) — clear all rows.
+  // How many shares each party owes: 1 for playing (if they did) + one per +1.
+  const sharesOf = (id: string) =>
+    (players.has(id) ? 1 : 0) + (guestCountByHost.get(id) ?? 0);
+
+  const debtorIds = [...parties].filter((id) => id !== game.bookerId);
+
+  // No one left to bill (everyone but the booker removed) — clear all rows,
+  // except any that are already paid (those are settled and must survive).
   if (debtorIds.length === 0) {
-    await prisma.paymentRequest.deleteMany({ where: { gameId: game.id } });
+    await prisma.paymentRequest.deleteMany({
+      where: { gameId: game.id, paidStatus: { not: PaymentStatus.MARKED_PAID } },
+    });
     return { ok: true, gameId: game.id, debtorCount: 0 };
   }
 
-  // Total heads = every billed member + their +1s (booker counted once here so
-  // their share comes off the top and lowers everyone's split).
-  const headCount = [...billed].reduce(
-    (n, id) => n + 1 + (guestCountByHost.get(id) ?? 0),
-    0,
-  );
+  // Total heads = every party's shares (the booker's own share + any +1s they
+  // brought come off the top, lowering everyone else's split).
+  const headCount = [...parties].reduce((n, id) => n + sharesOf(id), 0);
   const { perPersonPence } = calcSplit(game.totalCostPence, headCount);
   const desc = monzoDescription(game.kickoffAt);
 
   await prisma.$transaction(async (tx) => {
-    // Drop rows for anyone no longer billed.
+    // Drop rows for anyone no longer billed — but never a settled (paid) row.
     await tx.paymentRequest.deleteMany({
-      where: { gameId: game.id, debtorId: { notIn: debtorIds } },
+      where: {
+        gameId: game.id,
+        debtorId: { notIn: debtorIds },
+        paidStatus: { not: PaymentStatus.MARKED_PAID },
+      },
     });
     for (const debtorId of debtorIds) {
-      const shares = 1 + (guestCountByHost.get(debtorId) ?? 0);
-      const amountPence = perPersonPence * shares;
+      // A paid row is frozen — its amount reflects money already sent, so leave
+      // it exactly as-is (the booker absorbs any delta from re-splitting).
+      if (paidDebtors.has(debtorId)) continue;
+      const amountPence = perPersonPence * sharesOf(debtorId);
       const paymentLink = generatePaymentLink(
         game.booker!.paymentMethod,
         game.booker!.paymentHandle!,

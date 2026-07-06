@@ -214,6 +214,10 @@ model Game {
   bibsUserId      String?
   footballUserId  String?
   totalCostPence  Int?
+  // Set when an admin ends the game. Anchors the rating window to when the game
+  // actually completed, not kickoff — an admin can end a game days after kickoff
+  // (the lifecycle is admin-driven), and the window must start from that moment.
+  completedAt     DateTime?
   createdAt       DateTime   @default(now())
   updatedAt       DateTime   @updatedAt
 
@@ -228,7 +232,9 @@ model Game {
   ratings         Rating[]
   paymentRequests PaymentRequest[]
 
-  @@index([kickoffAt])
+  // One game per group per kickoff — backs openWeeklyGame's idempotency so a
+  // double-tapped "Create game" can't spawn a duplicate that spams the group.
+  @@unique([groupId, kickoffAt])
   @@index([status])
   // Matches the hot access patterns: filter by group + status, range/order by
   // kickoffAt (getCurrentGame, friday-lock, sunday-complete crons).

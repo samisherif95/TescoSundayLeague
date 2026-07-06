@@ -8,7 +8,7 @@ import {
   type BookerCandidate,
   type DraftablePlayer,
 } from "@/lib/game";
-import { sendEmail } from "@/lib/email";
+import { sendEmail, escapeHtml } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
 import { assignExtras } from "@/lib/duties";
 import { env } from "@/lib/env";
@@ -136,32 +136,49 @@ export async function lockGame(gameId: string): Promise<LockResult> {
   ];
   const teams = generateTeams(draftable);
 
-  await prisma.$transaction(async (tx) => {
-    await tx.game.update({
-      where: { id: game.id },
-      data: {
-        status: GameStatus.LOCKED,
-        bookerId: booker.id,
-        bibsUserId,
-        footballUserId,
-      },
-    });
-    // wipe and re-create teams (defensive)
-    await tx.team.deleteMany({ where: { gameId: game.id } });
-    for (const t of teams) {
-      await tx.team.create({
+  // Sentinel thrown to roll the transaction back when the game was locked (or
+  // cancelled) by a concurrent request between our read and this write.
+  const alreadyLocked = Symbol("alreadyLocked");
+  try {
+    await prisma.$transaction(async (tx) => {
+      // Conditional flip: only lock if the game is STILL open. Two admins
+      // double-clicking "Lock" would otherwise both pass the status check above
+      // and re-shuffle teams / re-notify. updateMany lets us see the row count.
+      const flipped = await tx.game.updateMany({
+        where: { id: game.id, status: GameStatus.OPEN },
         data: {
-          gameId: game.id,
-          label: t.label,
-          players: {
-            create: t.players.map((p) =>
-              p.userId ? { userId: p.userId } : { guestId: p.guestId },
-            ),
-          },
+          status: GameStatus.LOCKED,
+          bookerId: booker.id,
+          bibsUserId,
+          footballUserId,
         },
       });
+      if (flipped.count === 0) throw alreadyLocked;
+      // wipe and re-create teams (defensive)
+      await tx.team.deleteMany({ where: { gameId: game.id } });
+      for (const t of teams) {
+        await tx.team.create({
+          data: {
+            gameId: game.id,
+            label: t.label,
+            players: {
+              create: t.players.map((p) =>
+                p.userId ? { userId: p.userId } : { guestId: p.guestId },
+              ),
+            },
+          },
+        });
+      }
+    });
+  } catch (e) {
+    if (e === alreadyLocked) {
+      return {
+        ok: false,
+        error: "Game is not open — it's already locked or finished",
+      };
     }
-  });
+    throw e;
+  }
 
   await notifyLocked(game.id, booker, confirmed, bibsUserId, footballUserId);
 
@@ -190,7 +207,7 @@ async function notifyLocked(
     await sendEmail({
       to: booker.email,
       subject: "You're booking the pitch this Sunday",
-      html: `<p>Hi ${booker.name ?? "there"},</p>
+      html: `<p>Hi ${escapeHtml(booker.name) || "there"},</p>
         <p>You've been randomly picked to book the pitch for Sunday.</p>
         <p><a href="${env.appUrl}/games/${gameId}/book">Open the booking page</a> — it has the hireapitch.com link and a form to record the total cost. The app will generate Monzo links for everyone else.</p>`,
     }).catch(() => undefined);
@@ -203,7 +220,7 @@ async function notifyLocked(
         sendEmail({
           to: s.user.email!,
           subject: "Game locked — teams are out",
-          html: `<p>Sunday's lineup is locked. ${booker.name ?? "Someone"} is booking the pitch. <a href="${env.appUrl}/games/${gameId}">See your team</a>.</p>`,
+          html: `<p>Sunday's lineup is locked. ${escapeHtml(booker.name) || "Someone"} is booking the pitch. <a href="${env.appUrl}/games/${gameId}">See your team</a>.</p>`,
         }),
       ),
   );
