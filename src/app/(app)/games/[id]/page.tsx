@@ -15,7 +15,8 @@ import {
   MAX_PLAYERS,
   MIN_PLAYERS,
   isSignupOpen,
-  londonInputValue,
+  zonedInputValue,
+  LONDON_TZ,
 } from "@/lib/game";
 import { deriveScore } from "@/lib/match";
 import { SignupControls } from "./_signup-controls";
@@ -26,11 +27,13 @@ import { GameDetailsLine } from "./_details-editor";
 import { AdminLockCard } from "./_admin-lock";
 import { AdminEndCard } from "./_admin-end";
 import { AdminCancelCard } from "./_admin-cancel";
+import { DropOutCard } from "./_drop-out";
 import { DutiesEditor } from "./_duties-editor";
 import {
   AddGuestButton,
   AllowGuestsToggle,
   RemoveGuestButton,
+  RemovePlayerButton,
 } from "./_guest-controls";
 
 export default async function GameDetailPage({
@@ -60,7 +63,10 @@ export default async function GameDetailPage({
     (s) => s.userId === user.id && s.status !== SignupStatus.DROPPED_OUT,
   );
   const isBooker = game.bookerId === user.id;
-  const signupsOpen = isSignupOpen(game, game.group?.lockOffsetHours);
+  const signupsOpen = isSignupOpen(game);
+  // Display + edit kickoff in the group's own timezone (falls back to London
+  // for a legacy null-group game), not a hardcoded Europe/London.
+  const tz = game.group?.timezone ?? LONDON_TZ;
 
   // +1 guests count as bodies on the pitch, so the roster (and "more needed")
   // is members + guests.
@@ -81,6 +87,13 @@ export default async function GameDetailPage({
       (guestCountByHost.get(g.hostUserId) ?? 0) + 1,
     );
   }
+
+  // Rating opens for 48h from when the game ended (completedAt), not kickoff —
+  // matches the window the rate page/action enforce.
+  const RATING_WINDOW_MS = 48 * 60 * 60 * 1000;
+  const ratingWindowStart = game.completedAt ?? game.kickoffAt;
+  // eslint-disable-next-line react-hooks/purity -- server render; "now" is intended
+  const ratingOpen = Date.now() - ratingWindowStart.getTime() <= RATING_WINDOW_MS;
 
   // Anyone playing that Sunday can run the timer and record matches.
   const canRecord =
@@ -176,7 +189,7 @@ export default async function GameDetailPage({
             weekday: "long",
             day: "numeric",
             month: "long",
-            timeZone: "Europe/London",
+            timeZone: tz,
           })}
         </h1>
         <GameDetailsLine
@@ -185,11 +198,11 @@ export default async function GameDetailPage({
           timeLabel={game.kickoffAt.toLocaleTimeString("en-GB", {
             hour: "2-digit",
             minute: "2-digit",
-            timeZone: "Europe/London",
+            timeZone: tz,
           })}
           pitchName={game.pitchName}
           pitchBookingUrl={game.pitchBookingUrl}
-          kickoffLocal={londonInputValue(game.kickoffAt)}
+          kickoffLocal={zonedInputValue(game.kickoffAt, tz)}
         />
         <div className="mt-2 flex flex-wrap gap-2">
           <Badge variant="outline">{game.status}</Badge>
@@ -234,7 +247,7 @@ export default async function GameDetailPage({
         (game.status === GameStatus.OPEN ||
           game.status === GameStatus.LOCKED ||
           game.status === GameStatus.BOOKED) && (
-          <AdminCancelCard gameId={game.id} />
+          <AdminCancelCard gameId={game.id} status={game.status} />
         )}
 
       {game.status === GameStatus.OPEN && signupsOpen && (
@@ -253,17 +266,6 @@ export default async function GameDetailPage({
           confirmedCount={confirmed.length}
           maxPlayers={MAX_PLAYERS}
         />
-      )}
-
-      {game.status === GameStatus.OPEN && !signupsOpen && (
-        <Card>
-          <CardContent className="p-5">
-            <p className="text-sm">
-              Signups have closed for this game — the lineup is being locked in.
-              Check back shortly for teams.
-            </p>
-          </CardContent>
-        </Card>
       )}
 
       {game.status === GameStatus.OPEN && isAdmin && (
@@ -308,13 +310,17 @@ export default async function GameDetailPage({
         </Card>
       )}
 
-      {game.status === GameStatus.COMPLETED && mySignup && (
+      {(game.status === GameStatus.LOCKED ||
+        game.status === GameStatus.BOOKED) &&
+        amConfirmed && <DropOutCard gameId={game.id} />}
+
+      {game.status === GameStatus.COMPLETED && mySignup && ratingOpen && (
         <Card>
           <CardContent className="flex items-center justify-between p-5">
             <div>
               <p className="font-semibold">Rate your teammates</p>
               <p className="text-sm text-muted-foreground">
-                Open for 48 hours after kickoff. Anonymous.
+                Open for 48 hours after the game ends. Anonymous.
               </p>
             </div>
             <Button asChild>
@@ -347,6 +353,21 @@ export default async function GameDetailPage({
               name={s.user.name}
               image={s.user.image}
               position={s.position}
+              trailing={
+                // Admins can remove any player (except themselves) while the
+                // game is live — this pulls them off the roster and the teams,
+                // unlike the payments-only no-show removal.
+                isAdmin &&
+                s.userId !== user.id &&
+                game.status !== GameStatus.COMPLETED &&
+                game.status !== GameStatus.CANCELLED ? (
+                  <RemovePlayerButton
+                    gameId={game.id}
+                    userId={s.userId}
+                    name={s.user.name}
+                  />
+                ) : undefined
+              }
             />
           ))}
           {guests.map((g) => (

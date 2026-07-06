@@ -1,4 +1,4 @@
-import { prisma } from "@/lib/db";
+import { serializableTx, type Tx } from "@/lib/db";
 import {
   GameStatus,
   Position,
@@ -10,40 +10,9 @@ import {
   MIN_PLAYERS,
   generateTeams,
   pickBooker,
-  signupDeadline,
   type BookerCandidate,
 } from "@/lib/game";
 import { pickExtra } from "@/lib/duties";
-import { Prisma } from "@/generated/prisma/client";
-
-type Tx = Prisma.TransactionClient;
-
-/**
- * Run a transaction at SERIALIZABLE isolation, retrying on Postgres
- * serialization failures (P2034). Both signup paths are read-count-then-write
- * (count CONFIRMED, then insert), so under the default READ COMMITTED two people
- * grabbing the last spot at the same time could *both* be confirmed — exceeding
- * MAX_PLAYERS — and concurrent waitlist joins could collide on the same
- * position. SERIALIZABLE makes the DB detect the conflict and we retry the loser.
- */
-async function serializableTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return await prisma.$transaction(fn, {
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      });
-    } catch (e) {
-      if (
-        e instanceof Prisma.PrismaClientKnownRequestError &&
-        e.code === "P2034" &&
-        attempt < 5
-      ) {
-        continue;
-      }
-      throw e;
-    }
-  }
-}
 
 /** Wipe and re-create a game's teams from its current CONFIRMED signups + guests. */
 async function regenerateTeams(tx: Tx, gameId: string) {
@@ -77,6 +46,59 @@ async function regenerateTeams(tx: Tx, gameId: string) {
       },
     });
   }
+}
+
+/**
+ * Fill every free roster slot from the waitlist (in position order), then
+ * renumber whatever waitlist remains to a clean 1..n. Run this whenever a slot
+ * frees up — a member drops out (possibly taking +1s with them), or a guest is
+ * removed — so a freed spot always goes to the next person waiting instead of
+ * being left open for the next newcomer to jump the queue. A host dropping with
+ * two +1s frees three slots and promotes up to three waitlisters, not one.
+ * Returns the promoted userIds (for notifications). Guests count as bodies, so
+ * `freeSlots` accounts for them.
+ */
+export async function promoteWaitlist(
+  tx: Tx,
+  gameId: string,
+): Promise<string[]> {
+  const confirmedCount = await tx.signup.count({
+    where: { gameId, status: SignupStatus.CONFIRMED },
+  });
+  const guestCount = await tx.guest.count({ where: { gameId } });
+  const freeSlots = MAX_PLAYERS - (confirmedCount + guestCount);
+
+  const promoted: string[] = [];
+  if (freeSlots > 0) {
+    const next = await tx.signup.findMany({
+      where: { gameId, status: SignupStatus.WAITLIST },
+      orderBy: { waitlistPosition: "asc" },
+      take: freeSlots,
+    });
+    for (const s of next) {
+      await tx.signup.update({
+        where: { id: s.id },
+        data: { status: SignupStatus.CONFIRMED, waitlistPosition: null },
+      });
+      promoted.push(s.userId);
+    }
+  }
+
+  // Renumber the remaining waitlist to 1..n so positions never collide (a
+  // mid-list drop-out would otherwise leave a gap the next joiner duplicates).
+  const remaining = await tx.signup.findMany({
+    where: { gameId, status: SignupStatus.WAITLIST },
+    orderBy: { waitlistPosition: "asc" },
+  });
+  for (let i = 0; i < remaining.length; i++) {
+    if (remaining[i].waitlistPosition !== i + 1) {
+      await tx.signup.update({
+        where: { id: remaining[i].id },
+        data: { waitlistPosition: i + 1 },
+      });
+    }
+  }
+  return promoted;
 }
 
 /** The set of userIds in a group who are exempt from duties (per GroupMember). */
@@ -143,17 +165,14 @@ export async function joinGame(
   position: Position,
 ): Promise<SignupResult> {
   return serializableTx(async (tx) => {
-    const game = await tx.game.findUnique({
-      where: { id: gameId },
-      include: { group: { select: { lockOffsetHours: true } } },
-    });
+    const game = await tx.game.findUnique({ where: { id: gameId } });
     if (!game) throw new Error("Game not found");
-    // Closed once the game leaves OPEN *or* the group's signup deadline passes —
-    // the deadline gates signups even before an admin locks the lineup.
-    if (
-      game.status !== GameStatus.OPEN ||
-      new Date() >= signupDeadline(game.kickoffAt, game.group?.lockOffsetHours)
-    ) {
+    // Signups are open the whole time the game is OPEN. There's no clock-based
+    // cutoff: the admin locks the lineup manually (the old Friday-deadline was a
+    // leftover from the auto-lock cron, and it wrongly slammed signups shut while
+    // seats were still free). Once an admin locks (status leaves OPEN), joining
+    // stops.
+    if (game.status !== GameStatus.OPEN) {
       return { kind: "GAME_LOCKED" as const };
     }
 
@@ -181,8 +200,16 @@ export async function joinGame(
     // keeps the squad at MAX_PLAYERS total and sends a late member to the
     // waitlist rather than ever bumping a guest who's already in.
     const guestCount = await tx.guest.count({ where: { gameId } });
+    const waitlistCount = await tx.signup.count({
+      where: { gameId, status: SignupStatus.WAITLIST },
+    });
 
-    if (confirmedCount + guestCount < MAX_PLAYERS) {
+    // Confirm only if there's room AND nobody is already waiting. A non-empty
+    // waitlist means every freed slot belongs to the next person in line — a
+    // newcomer must queue behind them, not slip into the gap (freed slots are
+    // filled via promoteWaitlist on the drop-out/guest-removal that created
+    // them, so a waitlist coexisting with a free slot is only ever transient).
+    if (confirmedCount + guestCount < MAX_PLAYERS && waitlistCount === 0) {
       if (existing) {
         await tx.signup.update({
           where: { id: existing.id },
@@ -206,9 +233,6 @@ export async function joinGame(
       return { kind: "CONFIRMED" as const };
     }
 
-    const waitlistCount = await tx.signup.count({
-      where: { gameId, status: SignupStatus.WAITLIST },
-    });
     const nextWaitlist = waitlistCount + 1;
     if (existing) {
       await tx.signup.update({
@@ -236,8 +260,8 @@ export async function joinGame(
 }
 
 export type LeaveOutcome = {
-  /** Waitlister promoted into the freed CONFIRMED spot, if any. */
-  promotedUserId: string | null;
+  /** Waitlisters promoted into the freed CONFIRMED spot(s), if any. */
+  promotedUserIds: string[];
   /** Teams were wiped + rebuilt (happens for LOCKED games still ≥10). */
   teamsRegenerated: boolean;
   /** New booker chosen because the booker dropped out (LOCKED only). */
@@ -271,9 +295,19 @@ export async function leaveGame(
     const signup = await tx.signup.findUnique({
       where: { gameId_userId: { gameId, userId } },
     });
-    if (!game || !signup || signup.status === SignupStatus.DROPPED_OUT) {
+    // No-op if there's nothing to drop, or if the game is already finished /
+    // cancelled — leaveGame is a public POST endpoint, and letting someone drop
+    // out of a COMPLETED game would rewrite the historical roster, delete their
+    // +1s, wrongly promote a waitlister, and let a billed player dodge payment.
+    if (
+      !game ||
+      !signup ||
+      signup.status === SignupStatus.DROPPED_OUT ||
+      game.status === GameStatus.COMPLETED ||
+      game.status === GameStatus.CANCELLED
+    ) {
       return {
-        promotedUserId: null,
+        promotedUserIds: [],
         teamsRegenerated: false,
         newBookerId: null,
         newBibsUserId: null,
@@ -288,35 +322,24 @@ export async function leaveGame(
       where: { id: signup.id },
       data: { status: SignupStatus.DROPPED_OUT, waitlistPosition: null },
     });
-    // A dropping member takes their +1s with them — a guest with no host present
-    // makes no sense, and they shouldn't keep propping up the head count.
-    await tx.guest.deleteMany({ where: { gameId, hostUserId: userId } });
-
-    let promotedUserId: string | null = null;
+    // Keep their +1s: a guest the member brought is still expected to play, so
+    // they stay on the roster and the (now dropped-out) host is still billed for
+    // them at settlement — just for the +1, not for themselves. Remove them
+    // with the +1 controls if the guest isn't coming either.
+    //
+    // Pull the leaver out of any team they'd been drafted into, so their name
+    // comes off the lineup immediately. For a LOCKED game the regen below
+    // rebuilds the teams from scratch anyway; this covers the BOOKED case (no
+    // regen) so a removed player never lingers on a team.
     if (wasConfirmed) {
-      const top = await tx.signup.findFirst({
-        where: { gameId, status: SignupStatus.WAITLIST },
-        orderBy: { waitlistPosition: "asc" },
-      });
-      if (top) {
-        await tx.signup.update({
-          where: { id: top.id },
-          data: { status: SignupStatus.CONFIRMED, waitlistPosition: null },
-        });
-        promotedUserId = top.userId;
-        // re-number remaining waitlist
-        const remaining = await tx.signup.findMany({
-          where: { gameId, status: SignupStatus.WAITLIST },
-          orderBy: { waitlistPosition: "asc" },
-        });
-        for (let i = 0; i < remaining.length; i++) {
-          await tx.signup.update({
-            where: { id: remaining[i].id },
-            data: { waitlistPosition: i + 1 },
-          });
-        }
-      }
+      await tx.teamPlayer.deleteMany({ where: { userId, team: { gameId } } });
     }
+
+    // A confirmed drop-out (plus any +1s they took) frees one or more slots —
+    // promote the waitlist to fill them all before we (re)build teams below. A
+    // waitlisted drop-out frees no confirmed slot, so promoteWaitlist promotes
+    // nobody and just renumbers the remaining waitlist (returns []).
+    const promotedUserIds = await promoteWaitlist(tx, gameId);
 
     let teamsRegenerated = false;
     let newBookerId: string | null = null;
@@ -387,7 +410,7 @@ export async function leaveGame(
     }
 
     return {
-      promotedUserId,
+      promotedUserIds,
       teamsRegenerated,
       newBookerId,
       newBibsUserId,

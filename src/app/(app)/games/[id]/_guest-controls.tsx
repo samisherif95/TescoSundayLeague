@@ -7,6 +7,7 @@ import { Loader2, Plus, UserPlus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { addGuestAction, removeGuestAction, setAllowGuestsAction } from "./guest-actions";
+import { removePlayerAction } from "@/app/(app)/admin/actions";
 
 /** "Add a +1" button shown to confirmed players when guests are enabled. */
 export function AddGuestButton({ gameId }: { gameId: string }) {
@@ -60,6 +61,55 @@ export function RemoveGuestButton({ guestId }: { guestId: string }) {
           }
         })
       }
+    >
+      {pending ? (
+        <Loader2 className="size-4 animate-spin" />
+      ) : (
+        <X className="size-4" />
+      )}
+    </button>
+  );
+}
+
+/**
+ * Admin-only × that removes a player from the game entirely (roster + team),
+ * not just the payment split. Confirms first, since on a locked game it
+ * re-sorts the teams and may re-pick a duty. Gated server-side to admins.
+ */
+export function RemovePlayerButton({
+  gameId,
+  userId,
+  name,
+}: {
+  gameId: string;
+  userId: string;
+  name: string | null;
+}) {
+  const router = useRouter();
+  const [pending, start] = useTransition();
+  return (
+    <button
+      type="button"
+      aria-label={`Remove ${name ?? "player"}`}
+      title="Remove from the game (re-sorts teams)"
+      disabled={pending}
+      className="text-muted-foreground transition-colors hover:text-destructive disabled:opacity-50"
+      onClick={() => {
+        if (
+          !confirm(
+            `Remove ${name ?? "this player"} from the game? Their spot goes to the waitlist and the teams are re-sorted.`,
+          )
+        )
+          return;
+        start(async () => {
+          const r = await removePlayerAction(gameId, userId);
+          if ("error" in r) toast.error(r.error);
+          else {
+            toast.success(`Removed ${name ?? "player"}`);
+            router.refresh();
+          }
+        });
+      }}
     >
       {pending ? (
         <Loader2 className="size-4 animate-spin" />

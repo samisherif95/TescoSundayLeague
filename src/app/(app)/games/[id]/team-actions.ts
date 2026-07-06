@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { prisma } from "@/lib/db";
+import { GameStatus } from "@/generated/prisma/enums";
 import { authorizeAdmin } from "@/lib/booking-access";
 
 const moveSchema = z.object({
@@ -27,6 +28,20 @@ export async function moveTeamPlayerAction(
   const auth = await authorizeAdmin(gameId);
   if ("error" in auth) return auth;
 
+  // Lineups are frozen once the game is finished/cancelled — otherwise an admin
+  // could silently rewrite the teams that matches were recorded against.
+  const game = await prisma.game.findUnique({
+    where: { id: gameId },
+    select: { status: true },
+  });
+  if (!game) return { error: "Game not found" };
+  if (
+    game.status === GameStatus.COMPLETED ||
+    game.status === GameStatus.CANCELLED
+  ) {
+    return { error: "This game is finished — its teams can't be changed" };
+  }
+
   const toTeam = await prisma.team.findFirst({
     where: { id: toTeamId, gameId },
     select: { id: true },
@@ -46,6 +61,6 @@ export async function moveTeamPlayerAction(
   });
 
   revalidatePath(`/games/${gameId}`);
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true };
 }

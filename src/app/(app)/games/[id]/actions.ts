@@ -10,7 +10,7 @@ import {
 import { prisma } from "@/lib/db";
 import { requireOnboardedUser, requireGameMember } from "@/lib/session";
 import { joinGame, leaveGame } from "@/lib/signups";
-import { sendEmail } from "@/lib/email";
+import { sendEmail, escapeHtml } from "@/lib/email";
 import { sendPushToUsers } from "@/lib/push";
 import { env } from "@/lib/env";
 
@@ -33,7 +33,7 @@ export async function joinGameAction(formData: FormData) {
     parsed.data.position as Position,
   );
   revalidatePath(`/games/${parsed.data.gameId}`);
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true as const, result };
 }
 
@@ -52,20 +52,26 @@ export async function leaveGameAction(formData: FormData) {
     timeZone: "Europe/London",
   });
 
-  // Waitlister promoted into the freed spot.
-  if (outcome.promotedUserId) {
-    const promoted = await prisma.user.findUnique({
-      where: { id: outcome.promotedUserId },
+  // Waitlister(s) promoted into the freed spot(s) — a host dropping with +1s can
+  // free several at once.
+  if (outcome.promotedUserIds.length > 0) {
+    const promotedUsers = await prisma.user.findMany({
+      where: { id: { in: outcome.promotedUserIds } },
+      select: { id: true, name: true, email: true },
     });
-    if (promoted?.email) {
-      await sendEmail({
-        to: promoted.email,
-        subject: "You're in! Promoted from the waitlist",
-        html: `<p>Hi ${promoted.name ?? "there"},</p>
+    await Promise.allSettled(
+      promotedUsers
+        .filter((p) => p.email)
+        .map((p) =>
+          sendEmail({
+            to: p.email!,
+            subject: "You're in! Promoted from the waitlist",
+            html: `<p>Hi ${escapeHtml(p.name) || "there"},</p>
           <p>A spot opened up for the ${when} game and you're now confirmed. See you Sunday.</p>`,
-      }).catch(() => undefined);
-    }
-    await sendPushToUsers([outcome.promotedUserId], {
+          }),
+        ),
+    );
+    await sendPushToUsers(outcome.promotedUserIds, {
       title: "You're in!",
       body: `A spot opened up for ${when} — you're confirmed.`,
       url: gameUrl,
@@ -81,7 +87,7 @@ export async function leaveGameAction(formData: FormData) {
       await sendEmail({
         to: newBooker.email,
         subject: "You're now booking the pitch this Sunday",
-        html: `<p>Hi ${newBooker.name ?? "there"},</p>
+        html: `<p>Hi ${escapeHtml(newBooker.name) || "there"},</p>
           <p>The original booker dropped out, so you've been picked to book the pitch for ${when}.</p>
           <p><a href="${env.appUrl}${gameUrl}/book">Open the booking page</a>.</p>`,
       }).catch(() => undefined);
@@ -140,7 +146,7 @@ export async function leaveGameAction(formData: FormData) {
 
   revalidatePath(gameUrl);
   revalidatePath(`${gameUrl}/book`);
-  revalidatePath("/");
+  revalidatePath("/home");
   return { ok: true as const };
 }
 

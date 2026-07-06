@@ -14,13 +14,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { getCurrentGame } from "@/lib/games-queries";
 import { requireActiveGroup } from "@/lib/session";
 import { GameStatus, Position, SignupStatus } from "@/generated/prisma/enums";
-import {
-  MAX_PLAYERS,
-  MIN_PLAYERS,
-  LONDON_TZ,
-  isSignupOpen,
-  signupDeadline,
-} from "@/lib/game";
+import { MAX_PLAYERS, MIN_PLAYERS } from "@/lib/game";
 
 // Short word for the "Status" stat tile (the header badge carries the full
 // label). "Ready" means an OPEN game has enough players to lock — it must not
@@ -95,19 +89,12 @@ export default async function HomePage() {
   // once locked/booked/done the tile shows the status word instead.
   const showNeed = game.status === GameStatus.OPEN && needed > 0;
 
-  // For an OPEN game, signups can be closed by the clock (past the lock
-  // deadline) before an admin locks it — reflect that honestly.
-  const lockOffset = game.group?.lockOffsetHours;
-  const signupsOpen = isSignupOpen(game, lockOffset);
-  const label =
-    game.status === GameStatus.OPEN && !signupsOpen
-      ? "Signups closed"
-      : meta.label;
+  // Signups stay open the whole time a game is OPEN (the admin locks manually),
+  // so there's no "closing time" to show — just invite people to sign up.
+  const label = meta.label;
   const helper =
     game.status === GameStatus.OPEN
-      ? signupsOpen
-        ? `Sign up below — closes ${formatDeadline(signupDeadline(game.kickoffAt, lockOffset))}.`
-        : "Signups have closed — locking the lineup shortly."
+      ? "Sign up below — open until an admin locks the lineup."
       : meta.helper;
 
   return (
@@ -356,18 +343,6 @@ function PositionsBreakdown({
       ))}
     </div>
   );
-}
-
-/** e.g. "Fri 30 May, 18:00" in London time. */
-function formatDeadline(d: Date): string {
-  return d.toLocaleString("en-GB", {
-    timeZone: LONDON_TZ,
-    weekday: "short",
-    day: "numeric",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }
 
 function countPositions(

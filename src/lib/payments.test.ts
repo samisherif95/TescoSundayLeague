@@ -23,6 +23,7 @@ function game(overrides: Record<string, unknown> = {}) {
     bookerId: "u-booker",
     booker: { paymentMethod: "MONZO", paymentHandle: "booker" },
     guests: [],
+    paymentRequests: [],
     ...overrides,
   };
 }
@@ -105,30 +106,73 @@ describe("setBilledMembers — split maths", () => {
     expect(billed()).toEqual({ u1: 600 });
   });
 
-  it("drops a removed member's +1 from the head count too", async () => {
-    // u2 (removed) had brought a guest; only booker + u1 remain = 2 heads,
-    // £10 → £5 each. The removed member's guest doesn't inflate the count.
+  it("still bills a dropped host for their +1 (host played no part, owes the guest only)", async () => {
+    // u2 dropped out (not in the billed list) but their +1 still plays, so the
+    // guest stays and is billed to u2 — just the one share, no head for u2. Heads
+    // = booker + u1 + u2's guest = 3, £10 → £3.33 floor each.
     db.game.findUnique.mockResolvedValue(
       game({ guests: [{ hostUserId: "u2" }] }),
     );
     const r = await setBilledMembers("g1", ["u-booker", "u1"]);
-    expect(r).toMatchObject({ ok: true, debtorCount: 1 });
-    expect(billed()).toEqual({ u1: 500 });
+    expect(r).toMatchObject({ ok: true, debtorCount: 2 });
+    expect(billed()).toEqual({ u1: 333, u2: 333 });
   });
 
-  it("deletes rows for anyone no longer billed", async () => {
+  it("deletes rows for anyone no longer billed (never a paid row)", async () => {
     await setBilledMembers("g1", ["u-booker", "u1", "u2"]);
     expect(db.paymentRequest.deleteMany).toHaveBeenCalledWith({
-      where: { gameId: "g1", debtorId: { notIn: ["u1", "u2"] } },
+      where: {
+        gameId: "g1",
+        debtorId: { notIn: ["u1", "u2"] },
+        paidStatus: { not: "MARKED_PAID" },
+      },
     });
   });
 
-  it("clears all rows when only the booker is left", async () => {
+  it("clears all rows when only the booker is left (keeps paid rows)", async () => {
     const r = await setBilledMembers("g1", ["u-booker"]);
     expect(r).toMatchObject({ ok: true, debtorCount: 0 });
     expect(db.paymentRequest.deleteMany).toHaveBeenCalledWith({
-      where: { gameId: "g1" },
+      where: { gameId: "g1", paidStatus: { not: "MARKED_PAID" } },
     });
     expect(db.paymentRequest.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe("setBilledMembers — frozen paid rows", () => {
+  it("never reprices a MARKED_PAID debtor when the split changes", async () => {
+    // u1 already paid £2 (their share when there were 5 heads). A no-show (u4)
+    // is dropped → 4 heads, £2.50 each. u1 must keep their £2; only unpaid rows
+    // get the higher share, and the booker absorbs the difference.
+    db.game.findUnique.mockResolvedValue(
+      game({
+        paymentRequests: [
+          { debtorId: "u1", paidStatus: "MARKED_PAID" },
+          { debtorId: "u2", paidStatus: "UNPAID" },
+          { debtorId: "u3", paidStatus: "UNPAID" },
+        ],
+      }),
+    );
+    await setBilledMembers("g1", ["u-booker", "u1", "u2", "u3"]);
+    const amounts = billed();
+    // u1's frozen row is left untouched (no upsert for them)...
+    expect(amounts["u1"]).toBeUndefined();
+    // ...while the unpaid debtors are recomputed at the new per-head share.
+    expect(amounts).toEqual({ u2: 250, u3: 250 });
+  });
+
+  it("keeps a paid debtor billed even if the caller leaves them out", async () => {
+    db.game.findUnique.mockResolvedValue(
+      game({
+        paymentRequests: [{ debtorId: "u1", paidStatus: "MARKED_PAID" }],
+      }),
+    );
+    // Caller only bills u2, but u1 already paid — they must not be deleted.
+    const r = await setBilledMembers("g1", ["u-booker", "u2"]);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.debtorCount).toBe(2); // u1 (paid) + u2
+    // u1 isn't re-upserted (frozen); u2 is billed fresh.
+    expect(billed()["u1"]).toBeUndefined();
+    expect(Object.keys(billed())).toEqual(["u2"]);
   });
 });

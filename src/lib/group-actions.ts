@@ -5,6 +5,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db";
 import { requireOnboardedUser } from "@/lib/session";
 import { setActiveGroupId } from "@/lib/active-group";
+import { rateLimit, clientIp, retryAfterText } from "@/lib/rate-limit";
 
 // Join keys use Crockford base32 minus the ambiguous I/L/O/U, so a key shared
 // over WhatsApp can't be mistyped into a different valid key.
@@ -84,6 +85,17 @@ export async function joinGroup(formData: FormData) {
   const user = await requireOnboardedUser();
   const key = normalizeJoinKey(String(formData.get("key") ?? ""));
   if (!key) return { error: "Enter a join key." };
+
+  // Throttle key guessing. The keyspace is huge (~10^12), so this is
+  // defense-in-depth, not the primary control — but an unthrottled endpoint that
+  // reveals whether a key is valid shouldn't be left open to enumeration.
+  const ip = await clientIp();
+  const rl = await rateLimit(`joingroup:ip:${ip}`, 20, 15 * 60 * 1000);
+  if (!rl.ok) {
+    return {
+      error: `Too many attempts. Try again in ${retryAfterText(rl.retryAfterSec)}.`,
+    };
+  }
 
   const group = await prisma.group.findUnique({ where: { joinKey: key } });
   if (!group) {

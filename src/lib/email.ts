@@ -17,6 +17,21 @@ function transport(): Transporter | null {
   return _transport;
 }
 
+/**
+ * Escape a user-controlled string for safe interpolation into email HTML.
+ * Player and group names are free text (a member can set their name to
+ * `<a href="phish">…`), so every such value MUST pass through this before being
+ * embedded in an email body, or it injects markup into everyone's inbox.
+ */
+export function escapeHtml(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 export async function sendEmail(opts: {
   to: string | string[];
   subject: string;

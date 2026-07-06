@@ -6,6 +6,7 @@ import bcrypt from "bcryptjs";
 import { prisma } from "@/lib/db";
 import { env } from "@/lib/env";
 import { credentialsSchema } from "@/lib/auth-validation";
+import { rateLimit, clientIp } from "@/lib/rate-limit";
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   // Cast: Auth.js types use a slightly stale Prisma surface; runtime is fine.
@@ -35,6 +36,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           password: String(credentials?.password ?? ""),
         });
         if (!parsed.success) return null;
+        // Throttle brute-force at the authorize layer itself. The sign-in server
+        // action rate-limits too, but `authorize` is ALSO reachable by POSTing
+        // straight to /api/auth/callback/credentials, bypassing the action — so
+        // this is the throttle that actually covers every login path. Keyed by
+        // IP (fails open); a generous per-email counter blunts a targeted
+        // brute-force without hard-locking a victim out of their own account.
+        const ip = await clientIp();
+        const ipRl = await rateLimit(`login:ip:${ip}`, 10, 15 * 60 * 1000);
+        if (!ipRl.ok) return null;
+        const emailRl = await rateLimit(
+          `login:email:${parsed.data.email}`,
+          30,
+          15 * 60 * 1000,
+        );
+        if (!emailRl.ok) return null;
+
         const user = await prisma.user.findUnique({
           where: { email: parsed.data.email },
         });
