@@ -18,9 +18,16 @@ const { tx, prisma } = vi.hoisted(() => {
       count: vi.fn(),
       findMany: vi.fn(),
       create: vi.fn(),
+      findUnique: vi.fn(),
+      delete: vi.fn(),
     },
     groupMember: { findMany: vi.fn() },
-    teamPlayer: { findFirst: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    teamPlayer: {
+      findFirst: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+      create: vi.fn(),
+    },
     team: { deleteMany: vi.fn(), create: vi.fn() },
   };
   return {
@@ -32,7 +39,7 @@ const { tx, prisma } = vi.hoisted(() => {
 });
 vi.mock("@/lib/db", () => ({ prisma }));
 
-import { addGuest, joinGame, leaveGame } from "@/lib/signups";
+import { addGuest, joinGame, leaveGame, removeGuest } from "@/lib/signups";
 
 const TEN_OTHERS = [
   "u-booker",
@@ -341,6 +348,206 @@ describe("addGuest — booked game stays closed", () => {
     const r = await addGuest("g1", "host1");
     expect(r).toEqual({ kind: "GAME_LOCKED" });
     expect(tx.guest.create).not.toHaveBeenCalled();
+  });
+});
+
+// A guest on a game in the given status, as returned by tx.guest.findUnique.
+function guestOn(status: string) {
+  return {
+    id: "guest1",
+    gameId: "g1",
+    hostUserId: "host1",
+    game: {
+      id: "g1",
+      status,
+      groupId: "grp1",
+      bookerId: "u-booker",
+      bibsUserId: "u-bibs",
+      footballUserId: "u-foot",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+    },
+  };
+}
+
+describe("removeGuest — locked game, waitlister available", () => {
+  beforeEach(() => {
+    tx.guest.findUnique.mockResolvedValue(guestOn("LOCKED"));
+    tx.guest.delete.mockResolvedValue({});
+    // The guest's team slot (vacated by cascade when the guest is deleted).
+    tx.teamPlayer.findFirst.mockResolvedValue({
+      id: "tp-guest",
+      team: { id: "team-a", label: "A" },
+    });
+    tx.signup.findFirst.mockResolvedValue({ id: "sw1", userId: "u-wait" });
+    tx.signup.findMany.mockResolvedValueOnce([]); // remaining waitlist
+    tx.signup.count.mockResolvedValue(10); // confirmed members
+    tx.guest.count.mockResolvedValue(0); // no guests left after the delete
+  });
+
+  it("deletes the guest and slots the promoted waitlister into their exact team", async () => {
+    const r = await removeGuest("guest1");
+
+    expect(r).toMatchObject({
+      kind: "REMOVED",
+      gameId: "g1",
+      outcome: {
+        promotedUserId: "u-wait",
+        promotedTeamLabel: "A",
+        teamsRegenerated: false,
+        revertedToOpen: false,
+        status: "LOCKED",
+      },
+    });
+    expect(tx.guest.delete).toHaveBeenCalledWith({ where: { id: "guest1" } });
+    // The promoted player takes the exact slot the guest held.
+    expect(tx.teamPlayer.create).toHaveBeenCalledWith({
+      data: { teamId: "team-a", userId: "u-wait" },
+    });
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("removeGuest — locked game, no waitlister", () => {
+  beforeEach(() => {
+    tx.guest.findUnique.mockResolvedValue(guestOn("LOCKED"));
+    tx.guest.delete.mockResolvedValue({});
+    tx.teamPlayer.findFirst.mockResolvedValue({
+      id: "tp-guest",
+      team: { id: "team-a", label: "A" },
+    });
+    tx.signup.findFirst.mockResolvedValue(null); // nobody waiting
+    tx.signup.findMany
+      .mockResolvedValueOnce([]) // remaining waitlist
+      .mockResolvedValueOnce(ELEVEN_CONFIRMED); // regenerateTeams reads confirmed
+    tx.signup.count.mockResolvedValue(11);
+    tx.guest.count.mockResolvedValue(0);
+    tx.guest.findMany.mockResolvedValue([]); // regenerateTeams reads guests
+  });
+
+  it("rebalances the remaining squad into fresh teams", async () => {
+    const r = await removeGuest("guest1");
+
+    expect(r).toMatchObject({
+      kind: "REMOVED",
+      outcome: { promotedUserId: null, teamsRegenerated: true },
+    });
+    expect(tx.team.deleteMany).toHaveBeenCalledWith({ where: { gameId: "g1" } });
+    expect(tx.team.create).toHaveBeenCalled();
+  });
+});
+
+describe("removeGuest — locked game falls below the minimum", () => {
+  beforeEach(() => {
+    tx.guest.findUnique.mockResolvedValue(guestOn("LOCKED"));
+    tx.guest.delete.mockResolvedValue({});
+    tx.teamPlayer.findFirst.mockResolvedValue(null);
+    tx.signup.findFirst.mockResolvedValue(null);
+    tx.signup.findMany.mockResolvedValueOnce([]); // remaining waitlist
+    tx.signup.count.mockResolvedValue(9); // only 9 members + no guests left
+    tx.guest.count.mockResolvedValue(0);
+  });
+
+  it("reopens the game and clears teams + duties", async () => {
+    const r = await removeGuest("guest1");
+
+    expect(r).toMatchObject({
+      kind: "REMOVED",
+      outcome: { revertedToOpen: true, status: "OPEN" },
+    });
+    expect(tx.team.deleteMany).toHaveBeenCalledWith({ where: { gameId: "g1" } });
+    expect(tx.game.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: "OPEN", bookerId: null }),
+      }),
+    );
+  });
+});
+
+describe("removeGuest — booked game", () => {
+  beforeEach(() => {
+    tx.guest.findUnique.mockResolvedValue(guestOn("BOOKED"));
+    tx.guest.delete.mockResolvedValue({});
+    tx.teamPlayer.findFirst.mockResolvedValue({
+      id: "tp-guest",
+      team: { id: "team-b", label: "B" },
+    });
+    tx.signup.findFirst.mockResolvedValue({ id: "sw1", userId: "u-wait" });
+    tx.signup.findMany.mockResolvedValueOnce([]); // remaining waitlist
+  });
+
+  it("hands the guest's slot to the promoted waitlister without touching duties or money", async () => {
+    const r = await removeGuest("guest1");
+
+    expect(r).toMatchObject({
+      kind: "REMOVED",
+      outcome: {
+        promotedUserId: "u-wait",
+        promotedTeamLabel: "B",
+        newBookerId: null,
+        teamsRegenerated: false,
+        status: "BOOKED",
+      },
+    });
+    expect(tx.teamPlayer.create).toHaveBeenCalledWith({
+      data: { teamId: "team-b", userId: "u-wait" },
+    });
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.game.update).not.toHaveBeenCalled();
+  });
+
+  it("leaves the slot vacated when nobody is waiting", async () => {
+    tx.signup.findFirst.mockResolvedValue(null);
+    const r = await removeGuest("guest1");
+
+    expect(r).toMatchObject({
+      kind: "REMOVED",
+      outcome: { promotedUserId: null, teamsRegenerated: false },
+    });
+    // The cascade already removed the guest's TeamPlayer row — nothing to do.
+    expect(tx.teamPlayer.create).not.toHaveBeenCalled();
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("removeGuest — open game", () => {
+  beforeEach(() => {
+    tx.guest.findUnique.mockResolvedValue(guestOn("OPEN"));
+    tx.guest.delete.mockResolvedValue({});
+    tx.teamPlayer.findFirst.mockResolvedValue(null); // no teams before lock
+    tx.signup.findFirst.mockResolvedValue({ id: "sw1", userId: "u-wait" });
+    tx.signup.findMany.mockResolvedValueOnce([]); // remaining waitlist
+  });
+
+  it("deletes the guest and promotes the first waitlister into the freed spot", async () => {
+    const r = await removeGuest("guest1");
+
+    expect(r).toMatchObject({
+      kind: "REMOVED",
+      outcome: { promotedUserId: "u-wait", status: "OPEN" },
+    });
+    expect(tx.guest.delete).toHaveBeenCalledWith({ where: { id: "guest1" } });
+    expect(tx.signup.update).toHaveBeenCalledWith({
+      where: { id: "sw1" },
+      data: { status: "CONFIRMED", waitlistPosition: null },
+    });
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("removeGuest — finished games are refused", () => {
+  it.each(["COMPLETED", "CANCELLED"])("refuses on a %s game", async (status) => {
+    tx.guest.findUnique.mockResolvedValue(guestOn(status));
+    const r = await removeGuest("guest1");
+    expect(r).toEqual({ kind: "GAME_FINISHED" });
+    expect(tx.guest.delete).not.toHaveBeenCalled();
+  });
+
+  it("reports a guest that doesn't exist", async () => {
+    tx.guest.findUnique.mockResolvedValue(null);
+    const r = await removeGuest("nope");
+    expect(r).toEqual({ kind: "NOT_FOUND" });
+    expect(tx.guest.delete).not.toHaveBeenCalled();
   });
 });
 

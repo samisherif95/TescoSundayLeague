@@ -6,7 +6,8 @@ import { prisma } from "@/lib/db";
 import { GameStatus } from "@/generated/prisma/enums";
 import { requireGameAdmin, requireGameMember } from "@/lib/session";
 import { MAX_PLAYERS } from "@/lib/game";
-import { addGuest } from "@/lib/signups";
+import { addGuest, removeGuest } from "@/lib/signups";
+import { notifyLeaveOutcome } from "@/lib/leave-notify";
 
 const gameIdSchema = z.object({ gameId: z.string().min(1) });
 
@@ -73,8 +74,12 @@ export async function addGuestAction(
 }
 
 /**
- * Remove a +1. The host who added it can remove their own; an admin can remove
- * anyone's. Only while the game is still OPEN (after lock, teams are set).
+ * Remove a +1. The host who added it can remove their own while the game is
+ * still OPEN. An admin can remove anyone's +1 at any point up to completion —
+ * the override for a locked/booked game runs the full drop-out engine
+ * ({@link removeGuest}), so the guest leaves their team slot, a waitlister is
+ * promoted into it if one's waiting, and the game reopens if it falls below
+ * the minimum.
  */
 export async function removeGuestAction(
   guestId: string,
@@ -87,15 +92,23 @@ export async function removeGuestAction(
   });
   if (!guest) return { error: "Guest not found" };
   const { user, membership } = await requireGameMember(guest.game.id);
-  if (guest.hostUserId !== user.id && membership.role !== "ADMIN") {
+  const isAdmin = membership.role === "ADMIN";
+  if (guest.hostUserId !== user.id && !isAdmin) {
     return { error: "You can only remove a +1 you added" };
   }
-  if (guest.game.status !== GameStatus.OPEN) {
+  if (guest.game.status !== GameStatus.OPEN && !isAdmin) {
     return { error: "Too late to remove a +1 — the game is locked" };
   }
 
-  await prisma.guest.delete({ where: { id: guestId } });
+  const result = await removeGuest(guestId);
+  if (result.kind === "NOT_FOUND") return { error: "Guest not found" };
+  if (result.kind === "GAME_FINISHED") {
+    return { error: "This game is finished — the +1 can't be removed" };
+  }
+  await notifyLeaveOutcome(result.gameId, result.outcome);
+
   revalidatePath(`/games/${guest.game.id}`);
+  revalidatePath(`/games/${guest.game.id}/book`);
   revalidatePath("/");
   return { ok: true };
 }

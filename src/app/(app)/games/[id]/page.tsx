@@ -407,7 +407,13 @@ export default async function GameDetailPage({
               key={g.id}
               name={`${g.host.name ?? "Someone"} +1`}
               trailing={
-                g.hostUserId === user.id || isAdmin ? (
+                // The host can pull their own +1 while signups are open; an
+                // admin can pull any +1 right up until the game is finished
+                // (the server runs the full drop-out engine on the override).
+                (g.hostUserId === user.id && game.status === GameStatus.OPEN) ||
+                (isAdmin &&
+                  game.status !== GameStatus.COMPLETED &&
+                  game.status !== GameStatus.CANCELLED) ? (
                   <RemoveGuestButton guestId={g.id} />
                 ) : (
                   <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
