@@ -302,6 +302,149 @@ export async function addGuest(
   });
 }
 
+export type RemoveGuestResult =
+  | { kind: "REMOVED"; gameId: string; outcome: LeaveOutcome }
+  | { kind: "NOT_FOUND" }
+  | { kind: "GAME_FINISHED" };
+
+/**
+ * Remove a +1 guest from a game. Mirrors {@link leaveGame} for members —
+ * guests hold a roster spot and (after lock) a team slot, so pulling one out
+ * has the same knock-on effects as a member dropping:
+ *  - OPEN: delete the guest and promote the first waitlister into the freed
+ *    roster spot (guests count toward the cap, so a spot really did open up).
+ *  - LOCKED: promote a waitlister straight into the guest's exact team slot.
+ *    If nobody was waiting, the remaining squad is rebalanced into fresh
+ *    teams. Falling below the minimum reverts the game to OPEN (clearing
+ *    booker/duties + teams). Guests never hold duties, so there's nothing to
+ *    re-pick.
+ *  - BOOKED: the money's already split — just delete the guest and either
+ *    hand their team slot to a promoted waitlister or leave it vacated. The
+ *    booker reconciles any cash informally, same as a member drop-out.
+ *  - COMPLETED / CANCELLED: refused — the game is history.
+ *
+ * Who may call this is the action layer's problem (host while OPEN, admin any
+ * time up to completion); the engine just applies the removal atomically.
+ */
+export async function removeGuest(guestId: string): Promise<RemoveGuestResult> {
+  return serializableTx(async (tx) => {
+    const guest = await tx.guest.findUnique({
+      where: { id: guestId },
+      include: { game: true },
+    });
+    if (!guest) return { kind: "NOT_FOUND" as const };
+    const game = guest.game;
+    if (
+      game.status === GameStatus.COMPLETED ||
+      game.status === GameStatus.CANCELLED
+    ) {
+      return { kind: "GAME_FINISHED" as const };
+    }
+
+    // Capture the guest's team slot before the delete — the TeamPlayer row is
+    // removed by FK cascade the moment the guest goes.
+    const slot = await tx.teamPlayer.findFirst({
+      where: { guestId, team: { gameId: game.id } },
+      include: { team: { select: { id: true, label: true } } },
+    });
+
+    await tx.guest.delete({ where: { id: guestId } });
+
+    // The guest held a roster spot, so removal frees one — pull the first
+    // waitlister in, exactly as when a member drops out.
+    let promotedUserId: string | null = null;
+    const top = await tx.signup.findFirst({
+      where: { gameId: game.id, status: SignupStatus.WAITLIST },
+      orderBy: { waitlistPosition: "asc" },
+    });
+    if (top) {
+      await tx.signup.update({
+        where: { id: top.id },
+        data: { status: SignupStatus.CONFIRMED, waitlistPosition: null },
+      });
+      promotedUserId = top.userId;
+    }
+
+    // Re-number the remaining waitlist so positions stay 1..n with no gaps.
+    const remaining = await tx.signup.findMany({
+      where: { gameId: game.id, status: SignupStatus.WAITLIST },
+      orderBy: { waitlistPosition: "asc" },
+    });
+    for (let i = 0; i < remaining.length; i++) {
+      if (remaining[i].waitlistPosition !== i + 1) {
+        await tx.signup.update({
+          where: { id: remaining[i].id },
+          data: { waitlistPosition: i + 1 },
+        });
+      }
+    }
+
+    let teamsRegenerated = false;
+    let promotedTeamLabel: TeamLabel | null = null;
+    let revertedToOpen = false;
+    let status = game.status;
+
+    if (game.status === GameStatus.LOCKED) {
+      const confirmedCount = await tx.signup.count({
+        where: { gameId: game.id, status: SignupStatus.CONFIRMED },
+      });
+      const guestCount = await tx.guest.count({ where: { gameId: game.id } });
+      if (confirmedCount + guestCount >= MIN_PLAYERS) {
+        if (promotedUserId && slot) {
+          // The cascade vacated the guest's slot — hand the exact spot to the
+          // promoted waitlister so everyone else's team is left untouched.
+          await tx.teamPlayer.create({
+            data: { teamId: slot.team.id, userId: promotedUserId },
+          });
+          promotedTeamLabel = slot.team.label;
+        } else {
+          // No one waiting (or the guest somehow had no slot) — rebalance.
+          await regenerateTeams(tx, game.id);
+          teamsRegenerated = true;
+        }
+      } else {
+        // Not enough players to stay locked — reopen signups.
+        await tx.team.deleteMany({ where: { gameId: game.id } });
+        await tx.game.update({
+          where: { id: game.id },
+          data: {
+            status: GameStatus.OPEN,
+            bookerId: null,
+            bibsUserId: null,
+            footballUserId: null,
+          },
+        });
+        revertedToOpen = true;
+        status = GameStatus.OPEN;
+      }
+    } else if (game.status === GameStatus.BOOKED) {
+      // Money's settled — no reshuffle. The guest's slot is already vacated by
+      // the cascade; a promoted waitlister takes that exact spot if there was one.
+      if (promotedUserId && slot) {
+        await tx.teamPlayer.create({
+          data: { teamId: slot.team.id, userId: promotedUserId },
+        });
+        promotedTeamLabel = slot.team.label;
+      }
+    }
+
+    return {
+      kind: "REMOVED" as const,
+      gameId: game.id,
+      outcome: {
+        promotedUserId,
+        promotedTeamLabel,
+        teamsRegenerated,
+        newBookerId: null,
+        newBibsUserId: null,
+        newFootballUserId: null,
+        revertedToOpen,
+        status,
+      },
+    };
+  });
+}
+
 export type LeaveOutcome = {
   /** Waitlister promoted into the freed CONFIRMED spot, if any. */
   promotedUserId: string | null;
