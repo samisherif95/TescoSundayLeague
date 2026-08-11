@@ -60,10 +60,10 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         const ok = await bcrypt.compare(parsed.data.password, user.passwordHash);
         if (!ok) return null;
         // Email/password accounts must confirm their address first. Google
-        // accounts arrive pre-verified, and never reach this branch (no
-        // passwordHash). The sign-in action pre-checks this so it can show a
-        // helpful "verify your email" message + resend link instead of the
-        // generic credentials error this null produces.
+        // accounts never reach this branch (no passwordHash); they're stamped
+        // verified by the `signIn` event below. The sign-in action pre-checks
+        // this so it can show a helpful "verify your email" message + resend
+        // link instead of the generic credentials error this null produces.
         if (!user.emailVerified) return null;
         return {
           id: user.id,
@@ -124,6 +124,39 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           .catch(() => undefined);
       }
       return true;
+    },
+  },
+  events: {
+    /**
+     * Stamp `emailVerified` on Google accounts.
+     *
+     * Auth.js creates OAuth users with `emailVerified: null` — hardcoded, it
+     * ignores whatever the provider profile says (see @auth/core
+     * `handle-login`: `createUser({ ...profile, emailVerified: null })`). So
+     * every Google member sat in the DB looking exactly like an unconfirmed
+     * signup, even though Google had already verified the address. Anything
+     * keyed off `emailVerified` (the sign-up form's "is this account waiting on
+     * confirmation?" branch) drew the wrong conclusion from it.
+     *
+     * This event fires after the user row exists, for both the first sign-in
+     * and later ones, so it also backfills accounts created before this fix.
+     * Guarded on Google's own `email_verified` claim — we only trust the flag
+     * the provider actually asserts.
+     */
+    async signIn({ user, account, profile }) {
+      if (
+        account?.provider !== "google" ||
+        !profile?.email_verified ||
+        !user?.id
+      ) {
+        return;
+      }
+      await prisma.user
+        .updateMany({
+          where: { id: user.id, emailVerified: null },
+          data: { emailVerified: new Date() },
+        })
+        .catch(() => undefined);
     },
   },
 });

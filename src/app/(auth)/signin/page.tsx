@@ -16,6 +16,24 @@ const BANNERS: Record<string, { tone: "ok" | "error"; text: string }> = {
   },
 };
 
+/**
+ * Auth.js bounces failed provider sign-ins back here as `?error=<code>` (it's
+ * our configured `pages.signIn`). We used to render nothing for those, so the
+ * most common one — signing up with a password and then trying "Continue with
+ * Google" on the same address — dumped the user back on this page with no
+ * explanation at all, looking for all the world like the button was broken.
+ */
+const AUTH_ERRORS: Record<string, string> = {
+  OAuthAccountNotLinked:
+    "This email already has an account with a password. Log in with your email and password below (or use “Forgot password?”), then you're in.",
+  OAuthCallbackError: "Google sign-in didn't complete. Please try again.",
+  OAuthSignInError: "Google sign-in didn't complete. Please try again.",
+  AccessDenied: "That account can't sign in. Try another, or ask your group admin.",
+  Configuration:
+    "Sign-in is misconfigured on our side. Please tell your group admin.",
+};
+const AUTH_ERROR_FALLBACK = "Something went wrong signing you in. Please try again.";
+
 export default async function SignInPage({
   searchParams,
 }: {
@@ -23,6 +41,7 @@ export default async function SignInPage({
     reset?: string;
     verified?: string;
     verifyError?: string;
+    error?: string;
   }>;
 }) {
   const params = await searchParams;
@@ -30,6 +49,10 @@ export default async function SignInPage({
     (params.reset && BANNERS.reset) ||
     (params.verified && BANNERS.verified) ||
     (params.verifyError && BANNERS.verifyError) ||
+    (params.error && {
+      tone: "error" as const,
+      text: AUTH_ERRORS[params.error] ?? AUTH_ERROR_FALLBACK,
+    }) ||
     null;
 
   const session = await auth();

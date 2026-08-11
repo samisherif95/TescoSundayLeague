@@ -5,11 +5,55 @@ import bcrypt from "bcryptjs";
 import { signIn } from "@/auth";
 import { prisma } from "@/lib/db";
 import { credentialsSchema, signUpSchema, emailSchema } from "@/lib/auth-validation";
-import { sendVerificationEmail } from "@/lib/auth-emails";
+import {
+  sendAccountExistsEmail,
+  sendVerificationEmail,
+} from "@/lib/auth-emails";
 import { rateLimit, clientIp, retryAfterText } from "@/lib/rate-limit";
 
 const HOUR = 60 * 60 * 1000;
 const QUARTER_HOUR = 15 * 60 * 1000;
+
+const EMAIL_SEND_ERROR =
+  "We couldn't send that email just now. Please try again in a moment — if it keeps happening, let your group admin know.";
+
+/**
+ * What the sign-in form gets back. One shape for every auth action so the form
+ * can read `.error` off any of them without narrowing gymnastics.
+ * `pendingVerification` / `needsVerification` carry `email` for the notice.
+ */
+type AuthResult = {
+  error?: string;
+  ok?: boolean;
+  pendingVerification?: boolean;
+  needsVerification?: boolean;
+  email?: string;
+};
+
+/**
+ * Run an auth-email send, turning a failure into a message the user can act on.
+ *
+ * Without this a dead SMTP config (or a rejected send) either threw out of the
+ * server action — which the form swallows, leaving the spinner to stop with no
+ * explanation — or, when SMTP was simply unset, silently no-op'd while we still
+ * told the user to go check their inbox. Both look identical from the outside:
+ * "I signed up and never got the email." Now the failure is logged server-side
+ * AND surfaced to the person waiting on it.
+ *
+ * Returns `{ error }` on failure, or null when the mail went out.
+ */
+async function deliver(
+  send: () => Promise<void>,
+  email: string,
+): Promise<AuthResult | null> {
+  try {
+    await send();
+    return null;
+  } catch (err) {
+    console.error(`Auth email to ${email} failed to send:`, err);
+    return { error: EMAIL_SEND_ERROR };
+  }
+}
 
 // A valid bcrypt hash (of a random throwaway string) used for a decoy compare
 // when no account matches, so a wrong email and a wrong password take roughly
@@ -27,7 +71,9 @@ export async function signInWithGoogle() {
  * credentials provider rejects unverified accounts). Returns a flag the form
  * uses to switch to a "check your inbox" state.
  */
-export async function signUpWithEmail(formData: FormData) {
+export async function signUpWithEmail(
+  formData: FormData,
+): Promise<AuthResult> {
   const parsed = signUpSchema.safeParse({
     email: String(formData.get("email") ?? "")
       .trim()
@@ -39,12 +85,17 @@ export async function signUpWithEmail(formData: FormData) {
   }
   const { email, password } = parsed.data;
 
-  // Throttle account creation per IP (sends a verification email each time).
+  // Throttle account creation (each attempt sends mail). Per IP, and per address
+  // so the form can't be used to bomb one person's inbox from rotating IPs.
+  // Both are checked BEFORE any lookup, so the limit itself leaks nothing about
+  // whether the address is registered.
   const ip = await clientIp();
-  const rl = await rateLimit(`signup:ip:${ip}`, 5, HOUR);
-  if (!rl.ok) {
+  const perIp = await rateLimit(`signup:ip:${ip}`, 5, HOUR);
+  const perEmail = await rateLimit(`signup:email:${email}`, 5, HOUR);
+  const limited = !perIp.ok ? perIp : !perEmail.ok ? perEmail : null;
+  if (limited) {
     return {
-      error: `Too many sign-up attempts. Try again in ${retryAfterText(rl.retryAfterSec)}.`,
+      error: `Too many sign-up attempts. Try again in ${retryAfterText(limited.retryAfterSec)}.`,
     };
   }
 
@@ -53,26 +104,41 @@ export async function signUpWithEmail(formData: FormData) {
     select: { passwordHash: true, emailVerified: true },
   });
   if (existing) {
-    // Enumeration-safe: respond exactly as we do for a brand-new signup rather
-    // than confirming the email is registered (which turned this form into a
-    // member-list oracle). If it's an unverified credentials account, resend the
-    // verification so the real owner can still finish signing up; otherwise stay
-    // silent. Either way the caller sees the same "check your inbox" state.
-    if (existing.passwordHash && !existing.emailVerified) {
-      await sendVerificationEmail(email);
-    }
-    return { pendingVerification: true, email };
+    // Enumeration-safe: the browser gets the same "check your inbox" response
+    // for every address, so this form is never a member-list oracle. What
+    // differs is only what lands in the inbox that address owns — and EVERY
+    // branch now sends something, because "we told you to check your inbox and
+    // then sent nothing" is indistinguishable from a broken mailer.
+    const send = !existing.passwordHash
+      ? // OAuth-only account (signed up with Google). There's no password to
+        // set and nothing to verify, and we must not overwrite their account —
+        // so point them at the door that actually opens. Previously this branch
+        // sent NOTHING, which is why a Google user who then tried the sign-up
+        // tab waited forever for a verification email.
+        () => sendAccountExistsEmail(email, "google")
+      : existing.emailVerified
+        ? // Fully registered already: nothing to verify, just log in.
+          () => sendAccountExistsEmail(email, "password")
+        : // Unverified credentials account — resend so the real owner can
+          // finish signing up.
+          () => sendVerificationEmail(email);
+
+    const failed = await deliver(send, email);
+    return failed ?? { pendingVerification: true, email };
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
   await prisma.user.create({ data: { email, passwordHash } });
-  await sendVerificationEmail(email);
-
-  return { pendingVerification: true, email };
+  const failed = await deliver(() => sendVerificationEmail(email), email);
+  // The account exists either way; on a send failure the retry above lands in
+  // the "unverified credentials account" branch and re-sends.
+  return failed ?? { pendingVerification: true, email };
 }
 
 /** Log in an existing email/password account. */
-export async function signInWithEmail(formData: FormData) {
+export async function signInWithEmail(
+  formData: FormData,
+): Promise<AuthResult | undefined> {
   const parsed = credentialsSchema.safeParse({
     email: String(formData.get("email") ?? "")
       .trim()
@@ -130,7 +196,9 @@ export async function signInWithEmail(formData: FormData) {
  * Re-send the verification email for an unverified account. Enumeration-safe:
  * always reports success, only actually sends when an unverified account exists.
  */
-export async function resendVerification(formData: FormData) {
+export async function resendVerification(
+  formData: FormData,
+): Promise<AuthResult> {
   const parsed = emailSchema.safeParse(
     String(formData.get("email") ?? "")
       .trim()
@@ -155,8 +223,22 @@ export async function resendVerification(formData: FormData) {
     where: { email: parsed.data },
     select: { passwordHash: true, emailVerified: true },
   });
-  if (user?.passwordHash && !user.emailVerified) {
-    await sendVerificationEmail(parsed.data);
+  // Same rule as sign-up: identical response for every address, but never a
+  // "re-sent!" confirmation for mail we didn't actually send. An account that
+  // has nothing to verify (Google, or already confirmed) gets told how to log
+  // in instead; an address with no account at all gets nothing, since there is
+  // no inbox owner to help.
+  const send = !user
+    ? null
+    : !user.passwordHash
+      ? () => sendAccountExistsEmail(parsed.data, "google")
+      : user.emailVerified
+        ? () => sendAccountExistsEmail(parsed.data, "password")
+        : () => sendVerificationEmail(parsed.data);
+
+  if (send) {
+    const failed = await deliver(send, parsed.data);
+    if (failed) return failed;
   }
   return { ok: true };
 }

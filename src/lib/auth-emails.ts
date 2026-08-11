@@ -1,8 +1,42 @@
 // Auth-related transactional emails (password reset + email verification).
 // Built on the generic sendEmail() transport and the one-time-token helpers.
 import { env } from "./env";
-import { sendEmail } from "./email";
+import { isEmailConfigured, sendEmail } from "./email";
 import { createAuthToken } from "./auth-tokens";
+
+/**
+ * Send mail the user is actively waiting on, and fail loudly if we can't.
+ *
+ * These are `required: true` sends: with no SMTP config in production the send
+ * throws instead of being skipped, so the caller can tell the user rather than
+ * showing "check your inbox" for an email that was never going to arrive.
+ *
+ * Locally (no SMTP set up) that would make the whole flow untestable, so we log
+ * the link to the server console instead — same as before, minus the false
+ * promise. Never in production: there, unsendable auth mail is an outage and
+ * has to surface as one.
+ */
+async function sendAuthEmail(opts: {
+  to: string;
+  subject: string;
+  html: string;
+  /** The actionable link, echoed to the dev console when SMTP is unset. */
+  devLink?: string;
+}) {
+  if (!isEmailConfigured() && process.env.NODE_ENV !== "production") {
+    console.info(
+      `[dev] SMTP not configured — "${opts.subject}" for ${opts.to} was not sent.` +
+        (opts.devLink ? ` Open this link manually: ${opts.devLink}` : ""),
+    );
+    return;
+  }
+  await sendEmail({
+    to: opts.to,
+    subject: opts.subject,
+    html: opts.html,
+    required: true,
+  });
+}
 
 function layout(opts: {
   heading: string;
@@ -25,8 +59,9 @@ function layout(opts: {
 export async function sendPasswordResetEmail(email: string) {
   const token = await createAuthToken("password-reset", email);
   const url = `${env.appUrl}/reset-password?token=${token}`;
-  await sendEmail({
+  await sendAuthEmail({
     to: email,
+    devLink: url,
     subject: "Reset your Sunday League password",
     html: layout({
       heading: "Reset your password",
@@ -43,8 +78,9 @@ export async function sendPasswordResetEmail(email: string) {
 export async function sendVerificationEmail(email: string) {
   const token = await createAuthToken("email-verify", email);
   const url = `${env.appUrl}/api/auth/verify-email?token=${token}`;
-  await sendEmail({
+  await sendAuthEmail({
     to: email,
+    devLink: url,
     subject: "Confirm your email for Sunday League",
     html: layout({
       heading: "Confirm your email",
@@ -52,6 +88,37 @@ export async function sendVerificationEmail(email: string) {
       ctaLabel: "Verify my email",
       ctaUrl: url,
       footer: "If you didn't create an account, you can ignore this email.",
+    }),
+  });
+}
+
+/**
+ * Sent when someone tries to sign up with an address that already has an
+ * account. There's nothing to verify — but staying silent (as we used to) left
+ * the person staring at "check your inbox" for an email that was never coming.
+ * Telling them *in the inbox they own* how to get in keeps the browser response
+ * identical for every address, so it's still enumeration-safe.
+ *
+ * `method` is how the existing account signs in, so the mail names the door
+ * that actually opens.
+ */
+export async function sendAccountExistsEmail(
+  email: string,
+  method: "google" | "password",
+) {
+  const google = method === "google";
+  await sendAuthEmail({
+    to: email,
+    subject: "You already have a Sunday League account",
+    html: layout({
+      heading: "You're already signed up",
+      body: google
+        ? "Someone (probably you) just tried to create a Sunday League account with this email. You already have one — it uses <strong>Continue with Google</strong>, so there's no password to set and nothing to verify. Just tap below and pick this address."
+        : "Someone (probably you) just tried to create a Sunday League account with this email. You already have one with a password — log in below, or use “Forgot password?” if you can't remember it.",
+      ctaLabel: google ? "Continue with Google" : "Log in",
+      ctaUrl: `${env.appUrl}/signin`,
+      footer:
+        "If this wasn't you, nothing has changed — your account is untouched and you can ignore this email.",
     }),
   });
 }

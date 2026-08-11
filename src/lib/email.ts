@@ -62,13 +62,45 @@ function isTransient(err: unknown): boolean {
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+/** Thrown by `sendEmail({ required: true })` when there is no SMTP config. */
+export class EmailNotConfiguredError extends Error {
+  constructor() {
+    super(
+      "SMTP is not configured (SMTP_HOST is unset), so no email can be sent. " +
+        "Set SMTP_HOST/SMTP_PORT/SMTP_USER/SMTP_PASS — see .env.example.",
+    );
+    this.name = "EmailNotConfiguredError";
+  }
+}
+
+/** True when an SMTP transport is configured and mail can actually be sent. */
+export function isEmailConfigured(): boolean {
+  return env.smtp !== null;
+}
+
 export async function sendEmail(opts: {
   to: string | string[];
   subject: string;
   html: string;
+  /**
+   * Set for mail the product cannot function without (verification, password
+   * reset). Without it a missing SMTP config is a warning and the send is
+   * skipped — which is right for best-effort game notifications in local dev,
+   * but for auth mail it means the user is told "check your inbox" for an email
+   * that was never sent. `required` turns that silent skip into a throw so the
+   * caller can surface a real error instead.
+   */
+  required?: boolean;
 }) {
   const t = transport();
   if (!t) {
+    if (opts.required) {
+      console.error(
+        "SMTP not configured — REQUIRED email not sent:",
+        opts.subject,
+      );
+      throw new EmailNotConfiguredError();
+    }
     console.warn("SMTP not configured — email not sent:", opts.subject);
     return null;
   }

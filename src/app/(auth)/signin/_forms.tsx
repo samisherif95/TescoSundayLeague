@@ -24,6 +24,15 @@ import {
   signUpWithEmail,
 } from "./actions";
 
+// Shown when a server action rejects outright (network drop, an unhandled
+// server error). Without this the rejection escapes the transition and the form
+// just stops — spinner off, nothing said — which is exactly how "I signed up
+// and nothing happened" reports start.
+type ActionResult = Awaited<ReturnType<typeof signUpWithEmail>>;
+const UNEXPECTED_ERROR: ActionResult = {
+  error: "Something went wrong. Please try again in a moment.",
+};
+
 function GoogleIcon() {
   return (
     <svg viewBox="0 0 24 24" className="h-4 w-4" aria-hidden>
@@ -82,6 +91,7 @@ function VerifyNotice({
 }) {
   const [pending, start] = useTransition();
   const [resent, setResent] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   return (
     <div className="space-y-4 text-center">
@@ -95,6 +105,11 @@ function VerifyNotice({
           Click it to {variant === "signup" ? "finish setting up your account" : "log in"}.
         </p>
       </div>
+      {error && (
+        <p role="alert" className="text-sm text-destructive">
+          {error}
+        </p>
+      )}
       {resent ? (
         <p className="text-sm text-primary">Verification email re-sent.</p>
       ) : (
@@ -105,9 +120,15 @@ function VerifyNotice({
           onClick={() => {
             const fd = new FormData();
             fd.set("email", email);
+            setError(null);
+            // Only claim it was re-sent if the server says it actually went out
+            // — a failed send used to still show the green "re-sent" line.
             start(async () => {
-              await resendVerification(fd);
-              setResent(true);
+              const result = await resendVerification(fd).catch(
+                () => UNEXPECTED_ERROR,
+              );
+              if (result?.error) setError(result.error);
+              else setResent(true);
             });
           }}
         >
@@ -164,15 +185,17 @@ function EmailPasswordForm({ mode }: { mode: "login" | "signup" }) {
 
         setError(null);
         start(async () => {
-          const result = isSignup
-            ? await signUpWithEmail(fd)
-            : await signInWithEmail(fd);
+          const result = await (isSignup
+            ? signUpWithEmail(fd)
+            : signInWithEmail(fd)
+          ).catch(() => UNEXPECTED_ERROR);
           // A successful login redirects from the server action and never
           // returns here. Sign-up returns `pendingVerification`; an unverified
           // login returns `needsVerification` — both swap to the verify notice.
           if (result?.error) setError(result.error);
-          else if ("pendingVerification" in (result ?? {}) || "needsVerification" in (result ?? {}))
-            setVerifyEmail((result as { email: string }).email);
+          else if (result?.email &&
+            (result.pendingVerification || result.needsVerification))
+            setVerifyEmail(result.email);
         });
       }}
     >
