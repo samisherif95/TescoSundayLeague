@@ -29,7 +29,11 @@ import { MatchDay } from "./_match-day";
 import { TeamsEditor } from "./_teams-editor";
 import { GameDetailsLine } from "./_details-editor";
 import { AdminLockCard } from "./_admin-lock";
-import { AddPlayerCard, type AddablePlayer } from "./_add-player";
+import {
+  AddPlayerCard,
+  type AddablePlayer,
+  type GameStage,
+} from "./_add-player";
 import { AdminEndCard } from "./_admin-end";
 import { AdminCancelCard } from "./_admin-cancel";
 import { DutiesEditor } from "./_duties-editor";
@@ -71,10 +75,21 @@ export default async function GameDetailPage({
   // for a legacy null-group game), not a hardcoded Europe/London.
   const tz = game.group?.timezone ?? LONDON_TZ;
 
-  // Admins can hand-add any group member who isn't already in the game (signups
-  // here already exclude drop-outs, so a previously-dropped player can be re-added).
+  // Admins can hand-add any group member who isn't already in the game, at any
+  // point in the week and whether or not the lineup's locked — right up until
+  // the game is ended or cancelled. Null means no card; otherwise it's the stage
+  // the game's at, which decides what the card says will happen to the teams.
+  const addPlayerStage: GameStage | null =
+    isAdmin &&
+    (game.status === GameStatus.OPEN ||
+      game.status === GameStatus.LOCKED ||
+      game.status === GameStatus.BOOKED)
+      ? game.status
+      : null;
+  // Signups here already exclude drop-outs, so a previously-dropped player can
+  // be re-added.
   let addablePlayers: AddablePlayer[] = [];
-  if (isAdmin && game.status === GameStatus.OPEN && game.groupId) {
+  if (addPlayerStage && game.groupId) {
     const inGame = new Set(game.signups.map((s) => s.user.id));
     const members = await getGroupMembers(game.groupId);
     addablePlayers = members
@@ -302,8 +317,12 @@ export default async function GameDetailPage({
         />
       )}
 
-      {game.status === GameStatus.OPEN && isAdmin && (
-        <AddPlayerCard gameId={game.id} candidates={addablePlayers} />
+      {addPlayerStage && (
+        <AddPlayerCard
+          gameId={game.id}
+          candidates={addablePlayers}
+          status={addPlayerStage}
+        />
       )}
 
       {(game.status === GameStatus.OPEN ||

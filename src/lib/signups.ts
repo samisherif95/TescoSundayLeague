@@ -9,6 +9,7 @@ import {
   GUEST_SKILL_SCORE,
   MAX_PLAYERS,
   MIN_PLAYERS,
+  TEAM_SIZE,
   generateTeams,
   pickBooker,
   type BookerCandidate,
@@ -79,6 +80,38 @@ async function regenerateTeams(tx: Tx, gameId: string) {
   }
 }
 
+/**
+ * Place a single player into a game's existing teams without disturbing anyone
+ * else's — the counterpart to {@link regenerateTeams}, used when an admin adds
+ * someone to a BOOKED game. By then the squad has played off the team sheet and
+ * the pitch is paid for, so we append rather than reshuffle (mirroring how a
+ * BOOKED drop-out vacates one slot in place instead of rebalancing).
+ *
+ * The player joins the smallest team. Once A and B are both at TEAM_SIZE the
+ * overflow belongs in C — created on demand, since a 10-player game has none.
+ */
+async function slotIntoTeams(tx: Tx, gameId: string, userId: string) {
+  const teams = await tx.team.findMany({
+    where: { gameId },
+    select: { id: true, label: true, players: { select: { id: true } } },
+  });
+  // No team sheet yet (shouldn't happen on a BOOKED game) — nothing to slot into.
+  if (teams.length === 0) return;
+
+  const smallest = teams.reduce((a, b) =>
+    b.players.length < a.players.length ? b : a,
+  );
+  if (smallest.players.length < TEAM_SIZE) {
+    await tx.teamPlayer.create({ data: { teamId: smallest.id, userId } });
+    return;
+  }
+  // A and B are full, so this is overflow — team C takes it.
+  const teamC = teams.find((t) => t.label === TeamLabel.C);
+  const target =
+    teamC ?? (await tx.team.create({ data: { gameId, label: TeamLabel.C } }));
+  await tx.teamPlayer.create({ data: { teamId: target.id, userId } });
+}
+
 /** The set of userIds in a group who are exempt from duties (per GroupMember). */
 async function exemptUserIds(
   tx: Tx,
@@ -136,6 +169,15 @@ export type SignupResult =
   | { kind: "GAME_LOCKED" }
   | { kind: "GAME_FULL_NO_WAITLIST" };
 
+export type JoinOptions = {
+  /**
+   * Let an admin add someone to a BOOKED game as well. Self-signup stops at
+   * LOCKED, but an admin has to be able to put down whoever actually turns up
+   * right through the week — see {@link joinGame} for what that does to teams.
+   */
+  adminOverride?: boolean;
+};
+
 /**
  * Add a user to a game's signup list. Returns where they landed.
  *
@@ -143,22 +185,29 @@ export type SignupResult =
  * cutoff. The admin locks the lineup manually, so a player can add themselves
  * (into a vacancy or the waitlist) any time before the lock. A LOCKED game also
  * still takes late joins to back-fill drop-outs: the joiner fills a freed spot
- * (slotted straight into the rebuilt teams) or lands on the waitlist. Only
- * LOCKED reopens this way — a BOOKED game has its money split and teams frozen,
- * and a COMPLETED/CANCELLED game is done.
+ * (slotted straight into the rebuilt teams) or lands on the waitlist.
+ *
+ * With `adminOverride` a BOOKED game takes additions too — the pitch is paid
+ * for, but the split isn't worked out until the game is ended, so a late body
+ * costs nothing to admit. The teams differ by status: LOCKED rebalances the
+ * whole squad, BOOKED appends into the existing sheet ({@link slotIntoTeams})
+ * because everyone has already seen it. COMPLETED/CANCELLED stay shut for
+ * everyone — those games are history.
  */
 export async function joinGame(
   gameId: string,
   userId: string,
   position: Position,
+  { adminOverride = false }: JoinOptions = {},
 ): Promise<SignupResult> {
   return serializableTx(async (tx) => {
     const game = await tx.game.findUnique({ where: { id: gameId } });
     if (!game) throw new Error("Game not found");
-    // Open while OPEN (no deadline), or LOCKED to back-fill a drop-out. Every
-    // other status is closed for good.
-    const lateJoin = game.status === GameStatus.LOCKED;
-    if (game.status !== GameStatus.OPEN && !lateJoin) {
+    // Open while OPEN (no deadline), LOCKED to back-fill a drop-out, and BOOKED
+    // only for an admin. Every other status is closed for good.
+    const openStatuses: GameStatus[] = [GameStatus.OPEN, GameStatus.LOCKED];
+    if (adminOverride) openStatuses.push(GameStatus.BOOKED);
+    if (!openStatuses.includes(game.status)) {
       return { kind: "GAME_LOCKED" as const };
     }
 
@@ -208,11 +257,14 @@ export async function joinGame(
           },
         });
       }
-      // On a LOCKED game the teams already exist, so rebuild them to slot the
-      // new player into the freed spot and keep the sides balanced. (OPEN games
-      // have no teams yet — they're generated at lock time.)
-      if (lateJoin) {
+      // Once the lineup's locked the teams already exist, so the new player has
+      // to be placed into them. (OPEN games have no teams yet — they're
+      // generated at lock time.) A LOCKED game is still fluid, so rebuild it to
+      // keep the sides balanced; a BOOKED sheet is settled, so append in place.
+      if (game.status === GameStatus.LOCKED) {
         await regenerateTeams(tx, gameId);
+      } else if (game.status === GameStatus.BOOKED) {
+        await slotIntoTeams(tx, gameId, userId);
       }
       return { kind: "CONFIRMED" as const };
     }
