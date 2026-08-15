@@ -67,9 +67,13 @@ const addPlayerSchema = z.object({
  * Admin: add any group member to a game on their behalf — someone who asked to
  * be put down in person, or to make up the numbers. Runs the exact same signup
  * engine as a self sign-up ({@link joinGame}), so the cap, the waitlist and the
- * concurrency handling all behave identically (signups are open the whole time
- * the game is OPEN, and a LOCKED game still takes back-fills). The added player
- * is emailed + pushed so they know they're down.
+ * concurrency handling all behave identically.
+ *
+ * Works at any point in the week, whether or not the lineup is locked: the
+ * `adminOverride` flag opens up BOOKED games too (which are shut to self
+ * sign-ups), so an admin can put down a late arrival right up until the game is
+ * ended. Only COMPLETED/CANCELLED games refuse. The added player is emailed +
+ * pushed so they know they're down.
  */
 export async function addPlayerAction(
   gameId: string,
@@ -101,9 +105,12 @@ export async function addPlayerAction(
     return { error: "That player is already in this game." };
   }
 
-  const result = await joinGame(gameId, userId, position);
+  const result = await joinGame(gameId, userId, position, {
+    adminOverride: true,
+  });
   if (result.kind === "GAME_LOCKED") {
-    return { error: "This game is no longer open for signups." };
+    // With the override on, the only games left refusing are finished ones.
+    return { error: "This game is finished — you can't add players to it." };
   }
   if (result.kind === "GAME_FULL_NO_WAITLIST") {
     return { error: "The squad is full." };

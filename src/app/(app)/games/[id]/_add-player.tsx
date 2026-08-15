@@ -29,18 +29,32 @@ export type AddablePlayer = {
   preferredPosition: Position | null;
 };
 
+/** The live game statuses an admin can still add a player to. */
+export type GameStage = "OPEN" | "LOCKED" | "BOOKED";
+
+/** What adding someone actually does, which depends on how far along the game is. */
+const BLURB: Record<GameStage, string> = {
+  OPEN: "They'll be confirmed if there's room, or waitlisted if the squad is full.",
+  LOCKED:
+    "The lineup's locked, but you can still put someone down — they'll fill a free spot and the teams are rebalanced around them, or they'll be waitlisted if the squad is full.",
+  BOOKED:
+    "The pitch is booked, but you can still put someone down — they'll be added to the smallest team without reshuffling anyone else, and the cost is split when you end the game.",
+};
+
 /**
- * Admin-only control on an OPEN game: drop any group member who isn't already
- * in the game straight into the squad (or the waitlist if it's full). Unlike a
- * member's own sign-up, this works even after the soft signup deadline —
- * gated server-side in {@link addPlayerAction}.
+ * Admin-only control: drop any group member who isn't already in the game
+ * straight into the squad (or the waitlist if it's full). Available at any point
+ * in the week and whether or not the lineup is locked — right up until the game
+ * is ended or cancelled. Gated server-side in {@link addPlayerAction}.
  */
 export function AddPlayerCard({
   gameId,
   candidates,
+  status,
 }: {
   gameId: string;
   candidates: AddablePlayer[];
+  status: GameStage;
 }) {
   const router = useRouter();
   const [userId, setUserId] = useState("");
@@ -60,8 +74,7 @@ export function AddPlayerCard({
           <p className="font-semibold">Admin · add a player</p>
         </div>
         <p className="text-sm text-muted-foreground">
-          Put a group member down for this game on their behalf. They&apos;ll be
-          confirmed if there&apos;s room, or waitlisted if the squad is full.
+          Put a group member down for this game on their behalf. {BLURB[status]}
         </p>
         <div className="flex flex-wrap items-center gap-2">
           <Select

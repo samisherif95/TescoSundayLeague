@@ -28,7 +28,7 @@ const { tx, prisma } = vi.hoisted(() => {
       delete: vi.fn(),
       create: vi.fn(),
     },
-    team: { deleteMany: vi.fn(), create: vi.fn() },
+    team: { deleteMany: vi.fn(), create: vi.fn(), findMany: vi.fn() },
   };
   return {
     tx,
@@ -53,6 +53,9 @@ const TEN_OTHERS = [
   "u9",
   "u10",
 ].map((userId) => ({ userId }));
+
+/** A full team's worth of occupied slots, for the booked-game team-sheet reads. */
+const FIVE_SLOTS = Array.from({ length: 5 }, (_, i) => ({ id: `tp${i}` }));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -255,7 +258,7 @@ describe("joinGame — locked game that's already full", () => {
   });
 });
 
-describe("joinGame — booked game stays closed", () => {
+describe("joinGame — booked game stays closed to self-signup", () => {
   beforeEach(() => {
     tx.game.findUnique.mockResolvedValue({
       id: "g1",
@@ -268,6 +271,87 @@ describe("joinGame — booked game stays closed", () => {
 
   it("rejects the signup once the game is booked", async () => {
     const r = await joinGame("g1", "u-new", "MID");
+
+    expect(r).toEqual({ kind: "GAME_LOCKED" });
+    expect(tx.signup.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("joinGame — admin override on a booked game", () => {
+  beforeEach(() => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status: "BOOKED",
+      groupId: "grp1",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+    tx.signup.findUnique.mockResolvedValue(null); // brand-new signup
+    tx.signup.count.mockResolvedValue(11); // below MAX (15)
+    tx.guest.count.mockResolvedValue(0);
+    tx.signup.create.mockResolvedValue({});
+    // A + B full, C holding one overflow player — room in C.
+    tx.team.findMany.mockResolvedValue([
+      { id: "t-a", label: "A", players: FIVE_SLOTS },
+      { id: "t-b", label: "B", players: FIVE_SLOTS },
+      { id: "t-c", label: "C", players: [{ id: "tp-11" }] },
+    ]);
+  });
+
+  it("confirms the player and appends them without reshuffling the sheet", async () => {
+    const r = await joinGame("g1", "u-new", "MID", { adminOverride: true });
+
+    expect(r).toEqual({ kind: "CONFIRMED" });
+    // The squad has already seen the team sheet — nothing is wiped or rebuilt.
+    expect(tx.team.deleteMany).not.toHaveBeenCalled();
+    expect(tx.team.create).not.toHaveBeenCalled();
+    // They join the smallest team (C).
+    expect(tx.teamPlayer.create).toHaveBeenCalledWith({
+      data: { teamId: "t-c", userId: "u-new" },
+    });
+  });
+
+  it("opens team C when A and B are both full and there's no C yet", async () => {
+    tx.team.findMany.mockResolvedValue([
+      { id: "t-a", label: "A", players: FIVE_SLOTS },
+      { id: "t-b", label: "B", players: FIVE_SLOTS },
+    ]);
+    tx.team.create.mockResolvedValue({ id: "t-c-new", label: "C" });
+
+    const r = await joinGame("g1", "u-new", "MID", { adminOverride: true });
+
+    expect(r).toEqual({ kind: "CONFIRMED" });
+    expect(tx.team.create).toHaveBeenCalledWith({
+      data: { gameId: "g1", label: "C" },
+    });
+    expect(tx.teamPlayer.create).toHaveBeenCalledWith({
+      data: { teamId: "t-c-new", userId: "u-new" },
+    });
+  });
+
+  it("waitlists instead of slotting in when the squad is full", async () => {
+    // First count = CONFIRMED (15, full); second = WAITLIST (none yet).
+    tx.signup.count.mockReset();
+    tx.signup.count.mockResolvedValueOnce(15).mockResolvedValueOnce(0);
+
+    const r = await joinGame("g1", "u-new", "MID", { adminOverride: true });
+
+    expect(r).toEqual({ kind: "WAITLIST", position: 1 });
+    expect(tx.teamPlayer.create).not.toHaveBeenCalled();
+  });
+});
+
+describe("joinGame — finished games refuse even an admin override", () => {
+  it.each(["COMPLETED", "CANCELLED"])("rejects a %s game", async (status) => {
+    tx.game.findUnique.mockResolvedValue({
+      id: "g1",
+      status,
+      groupId: "grp1",
+      kickoffAt: new Date("2026-06-14T11:00:00Z"),
+      group: { lockOffsetHours: 42 },
+    });
+
+    const r = await joinGame("g1", "u-new", "MID", { adminOverride: true });
 
     expect(r).toEqual({ kind: "GAME_LOCKED" });
     expect(tx.signup.create).not.toHaveBeenCalled();

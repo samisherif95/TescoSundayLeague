@@ -74,14 +74,19 @@ describe("addPlayerAction", () => {
     db.signup.findUnique.mockResolvedValue({ status: "DROPPED_OUT" });
     const r = await addPlayerAction("g1", "u1", "FWD");
     expect(r).toMatchObject({ ok: true });
-    expect(joinGame).toHaveBeenCalledWith("g1", "u1", "FWD");
+    expect(joinGame).toHaveBeenCalledWith("g1", "u1", "FWD", {
+      adminOverride: true,
+    });
   });
 
   it("adds the player and notifies them", async () => {
     const r = await addPlayerAction("g1", "u1", "DEF");
     expect(r).toMatchObject({ ok: true, result: { kind: "CONFIRMED" } });
-    // Signups are open the whole time the game is OPEN — no deadline to bypass.
-    expect(joinGame).toHaveBeenCalledWith("g1", "u1", "DEF");
+    // The override is what lets an admin add at any point in the week, locked
+    // lineup or not — only a finished game refuses.
+    expect(joinGame).toHaveBeenCalledWith("g1", "u1", "DEF", {
+      adminOverride: true,
+    });
     expect(sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({ to: "sam@example.com" }),
     );
@@ -105,11 +110,11 @@ describe("addPlayerAction", () => {
     expect(sendPushToUsers).toHaveBeenCalledWith(["u1"], expect.any(Object));
   });
 
-  it("surfaces a locked game as an error", async () => {
+  it("surfaces a finished game as an error", async () => {
     joinGame.mockResolvedValue({ kind: "GAME_LOCKED" });
     const r = await addPlayerAction("g1", "u1", "MID");
     expect(r).toMatchObject({
-      error: expect.stringMatching(/no longer open/i),
+      error: expect.stringMatching(/finished/i),
     });
   });
 });
